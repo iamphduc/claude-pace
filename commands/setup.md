@@ -47,3 +47,22 @@ Tell the user:
 - Restart Claude Code (or start a new session) to see the statusline.
 - To update later: run `/claude-pace:setup` again.
 - To remove: delete the `statusLine` block from `~/.claude/settings.json`.
+
+---
+
+## PowerShell alternative (Windows)
+
+Use this path **instead** of Steps 1-3 if user has `pwsh` and prefers no Bash/jq.
+
+1. Require `pwsh` v7+ (`pwsh -NoProfile -Command '$PSVersionTable.PSVersion.Major'`). No `jq` needed.
+2. Download:
+   ```bash
+   curl -fsSL -o ~/.claude/statusline.ps1 \
+     https://raw.githubusercontent.com/iamphduc/claude-pace/main/claude-pace.ps1
+   ```
+3. Set `statusLine.command` in `~/.claude/settings.json`:
+   ```json
+   "command": "pwsh -NoProfile -File ~/.claude/statusline.ps1"
+   ```
+
+Confirm same as Step 4.

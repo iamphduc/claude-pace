@@ -133,6 +133,70 @@ The entire tool is [one Bash file](claude-pace.sh). Read it before you install i
 
 [**diffpane**](https://github.com/Astro-Han/diffpane) - Real-time TUI diff viewer for AI coding agents. See what Claude Code changes as it happens.
 
+---
+
+## Fork additions: PowerShell port for Windows
+
+> Everything above this line refers to the upstream Astro-Han/claude-pace project (Bash + jq, macOS/Linux focus). This fork adds a Windows-friendly PowerShell port that ships alongside the bash original.
+
+### Why a PS port
+
+The bash version requires Git Bash + `jq` on Windows, which is friction if you're already living in PowerShell. `claude-pace.ps1` is a pure PowerShell 7+ rewrite — no Bash, no `jq`, no Node — that uses the same statusline contract and same private cache files (wire-compatible with the bash version).
+
+### Install
+
+Drop the script anywhere you like and point `~/.claude/settings.json` at it:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "pwsh -NoProfile -File <absolute-path>/claude-pace.ps1"
+  }
+}
+```
+
+Restart Claude Code. Done. No `jq` to install.
+
+### What changed visually vs the bash version
+
+![claude-pace PowerShell port](.github/claude-pace-powershell.png)
+
+The PS port deliberately diverges from bash output to render reliably in default Windows terminals (Consolas font, OEM codepages):
+
+| | Bash original | PS port |
+|---|---|---|
+| Progress bar | `█░░░░░░░░░` | `[###-------]` (ASCII, brackets share the bar color) |
+| Pace delta | `⇡15%` / `⇣15%` | `(+15%)` / `(-15%)` (paren-wrapped, pure ASCII) |
+| Countdown | `3h` / `3d` (single unit) | `1h32m` / `2d4h` (compact compound) |
+| Primary `%` | plain | **bold** |
+| Token count | not shown | `340K` dim, next to `%` |
+| Window labels | `5h` / `7d` | `5h:` / `7d:` |
+| Inter-window separator | double space | dim `\|` |
+| Untracked files | invisible (only `git diff HEAD`) | counted toward `+lines` and file count |
+
+```
+Opus 4.7 (1M) xhigh    |  claude-pace (main) 4f +937 -0
+[###-------] 34% 340K  |  5h: 91% (+51%) 1h32m | 7d: 51% (-6%) 2d4h
+```
+
+### Tests
+
+`test.ps1` is a custom regression harness (no Pester dep) — 95+ assertions across 28 scenarios mirroring `test.sh`. Run:
+
+```powershell
+pwsh -NoProfile -File test.ps1
+```
+
+Exit code = number of failures.
+
+### Caveats
+
+- Requires PowerShell 7+ (`pwsh`).
+- `git` must be on PATH (the script shells out for branch / diff / untracked detection).
+- Does not pipe through `jq` — uses `ConvertFrom-Json` instead.
+- The bash project's plugin / npm / curl install paths still install the bash version. Wiring the PS port today is manual (point `statusLine.command` at the `.ps1`).
+
 ## License
 
 MIT
