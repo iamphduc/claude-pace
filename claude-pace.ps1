@@ -57,6 +57,16 @@ $EF = switch ($EFF) {
     'max'    { 'max' }
     default  { 'medium' }
 }
+# Effort gets its own color so it's distinguishable from the model (cyan).
+# Intensity scale: low=dim → max=bold red.
+$EF_COLOR = switch ($EF) {
+    'low'    { $D }
+    'medium' { $G }
+    'high'   { $Y }
+    'xhigh'  { $R }
+    'max'    { "$B$R" }
+    default  { $G }
+}
 
 $U5 = '--'; $U7 = '--'; $R5 = 0; $R7 = 0
 if ($HAS_RL) {
@@ -391,7 +401,7 @@ $LEFT_TARGET = [math]::Max($L1_PLAIN.Length, $L2_PLAIN.Length) + $GAP
 $PAD1 = ' ' * ($LEFT_TARGET - $L1_PLAIN.Length)
 $PAD2 = ' ' * ($LEFT_TARGET - $L2_PLAIN.Length)
 
-$L1 = "$C$MODEL $EF$N$PAD1$D|$N$RGAP$L1R"
+$L1 = "$C$MODEL$N $EF_COLOR$EF$N$PAD1$D|$N$RGAP$L1R"
 
 $U5fmt = Format-Usage -u $U5 -rm $RM5 -w 300
 $U7fmt = Format-Usage -u $U7 -rm $RM7 -w 10080
