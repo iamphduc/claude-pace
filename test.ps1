@@ -114,7 +114,7 @@ function Hash-Dir { param([string]$Dir)
     return (($sha | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0, 16)
 }
 function Get-GitCachePath   { param([string]$Root, [string]$Dir) Join-Path $Root ('claude-sl-git-' + (Hash-Dir $Dir)) }
-function Get-QuotaCachePath { param([string]$Root) Join-Path $Root 'claude-sl-quota' }
+function Get-QuotaCachePath { param([string]$Root) Join-Path $Root 'claude-sl-quota' }   # legacy v0.8.x path — kept only for orphan-ignored test
 
 function Init-TestRepo {
     param([string]$Path)
@@ -268,148 +268,85 @@ $DIR_B = Join-Path $script:TestTmp 'coll-a-b'
 $null = New-Item -ItemType Directory -Path $DIR_A, $DIR_B -Force
 Assert-True "different dirs produce different cache keys" ((Hash-Dir $DIR_A) -ne (Hash-Dir $DIR_B))
 
-# ── Test 19: Live rate_limits writes quota cache ──
-Write-Host "Test 19: live rate_limits writes quota cache"
-$QUOTA_HOME    = Join-Path $script:TestTmp 'quota-home'
-$QUOTA_RUNTIME = Join-Path $script:TestTmp 'quota-runtime'
-$QUOTA_ROOT    = Join-Path $QUOTA_RUNTIME 'claude-pace'
-$null = New-Item -ItemType Directory -Path $QUOTA_HOME, $QUOTA_RUNTIME -Force
-Invoke-SideEffect -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"rate_limits`":{`"five_hour`":{`"used_percentage`":30,`"resets_at`":$($NOW+12000)},`"seven_day`":{`"used_percentage`":15,`"resets_at`":$($NOW+500000)}}}" -Env @{ HOME = $QUOTA_HOME; USERPROFILE = $QUOTA_HOME; XDG_RUNTIME_DIR = $QUOTA_RUNTIME }
-Assert-True "quota cache file created from live rate_limits" (Test-Path -LiteralPath (Get-QuotaCachePath $QUOTA_ROOT))
+# ── Test 18: No rate_limits shows placeholders + session cost (no cache) ──
+# Behavior contract since v0.9.0: when stdin omits rate_limits, show "5h --" /
+# "7d --" and the session cost. Must NOT consult any quota cache file.
+# See docs/decisions/2026-05-20-quota-cache-removal.md.
+Write-Host "Test 18: no rate_limits shows placeholders + cost"
+$NORL_HOME    = Join-Path $script:TestTmp 'norl-home'
+$NORL_RUNTIME = Join-Path $script:TestTmp 'norl-runtime'
+$null = New-Item -ItemType Directory -Path $NORL_HOME, $NORL_RUNTIME -Force
+$script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"cost`":{`"total_cost_usd`":1.23}}" -Env @{ HOME = $NORL_HOME; USERPROFILE = $NORL_HOME; XDG_RUNTIME_DIR = $NORL_RUNTIME }
+Assert-Line "5h shows -- when rate_limits missing"      2 '5h: --'
+Assert-Line "7d shows -- when rate_limits missing"      2 '7d: --'
+Assert-Line "session cost shown when rate_limits missing" 2 '\$1\.23'
 
-# ── Test 20: Missing rate_limits reuses cached quota and suppresses cost ──
-Write-Host "Test 20: missing rate_limits reuses cached quota"
-$script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"cost`":{`"total_cost_usd`":1.23}}" -Env @{ HOME = $QUOTA_HOME; USERPROFILE = $QUOTA_HOME; XDG_RUNTIME_DIR = $QUOTA_RUNTIME }
-Assert-Line    "cached 5h quota shown"               2 '5h: 30%'
-Assert-Line    "cached 7d quota shown"               2 '7d: 15%'
-Assert-LineNot "cached quota suppresses session cost" 2 '\$1\.23'
+# ── Test 19: Orphan quota cache file from previous versions is ignored ──
+# v0.8.x left ~/.cache/claude-pace/claude-sl-quota* files on user machines.
+# v0.9.0 must not read them — output must look identical to a fresh install.
+Write-Host "Test 19: orphan quota cache file is ignored"
+$ORPHAN_HOME    = Join-Path $script:TestTmp 'orphan-home'
+$ORPHAN_RUNTIME = Join-Path $script:TestTmp 'orphan-runtime'
+$ORPHAN_ROOT    = Join-Path $ORPHAN_RUNTIME 'claude-pace'
+$null = New-Item -ItemType Directory -Path $ORPHAN_HOME, $ORPHAN_RUNTIME, $ORPHAN_ROOT -Force
+# Plant a plausible-looking legacy v0.8.x quota record (still-future resets).
+Set-Content -LiteralPath (Get-QuotaCachePath $ORPHAN_ROOT) -Value '77|66|9999999999|9999999999' -NoNewline
+$script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"cost`":{`"total_cost_usd`":1.23}}" -Env @{ HOME = $ORPHAN_HOME; USERPROFILE = $ORPHAN_HOME; XDG_RUNTIME_DIR = $ORPHAN_RUNTIME }
+Assert-Line "orphan cache ignored: 5h --"                  2 '5h: --'
+Assert-Line "orphan cache ignored: 7d --"                  2 '7d: --'
+Assert-Line "orphan cache does not suppress session cost"  2 '\$1\.23'
+Assert-True "orphan cache file left untouched" (Test-Path -LiteralPath (Get-QuotaCachePath $ORPHAN_ROOT))
 
-# ── Test 21: Invalid quota cache degrades to no-quota fallback ──
-Write-Host "Test 21: invalid quota cache degrades cleanly"
-$BAD_HOME    = Join-Path $script:TestTmp 'bad-home'
-$BAD_RUNTIME = Join-Path $script:TestTmp 'bad-runtime'
-$BAD_ROOT    = Join-Path $BAD_RUNTIME 'claude-pace'
-$null = New-Item -ItemType Directory -Path $BAD_HOME, $BAD_ROOT -Force
-Set-Content -LiteralPath (Get-QuotaCachePath $BAD_ROOT) -Value 'abc|15|9999999999|9999999999' -NoNewline
-$script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"cost`":{`"total_cost_usd`":1.23}}" -Env @{ HOME = $BAD_HOME; USERPROFILE = $BAD_HOME; XDG_RUNTIME_DIR = $BAD_RUNTIME }
-Assert-Line "invalid cache falls back to no quota 5h" 2 '5h: --'
-Assert-Line "invalid cache falls back to no quota 7d" 2 '7d: --'
-Assert-Line "invalid cache keeps session cost"        2 '\$1\.23'
-
-# ── Test 22: Safe cache root with no quota file degrades to no-quota fallback ──
-Write-Host "Test 22: safe cache root without quota cache file"
-$EMPTY_HOME    = Join-Path $script:TestTmp 'empty-home'
-$EMPTY_RUNTIME = Join-Path $script:TestTmp 'empty-runtime'
-$null = New-Item -ItemType Directory -Path $EMPTY_HOME, $EMPTY_RUNTIME -Force
-$script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"cost`":{`"total_cost_usd`":1.23}}" -Env @{ HOME = $EMPTY_HOME; USERPROFILE = $EMPTY_HOME; XDG_RUNTIME_DIR = $EMPTY_RUNTIME }
-Assert-Line "safe cache root without file keeps 5h --"           2 '5h: --'
-Assert-Line "safe cache root without file keeps 7d --"           2 '7d: --'
-Assert-Line "safe cache root without file keeps session cost"    2 '\$1\.23'
-
-# ── Test 23: Partial live missing five_hour does not overwrite cache ──
-Write-Host "Test 23: partial live missing five_hour"
-$PARTIAL_HOME    = Join-Path $script:TestTmp 'partial-home'
-$PARTIAL_RUNTIME = Join-Path $script:TestTmp 'partial-runtime'
-$null = New-Item -ItemType Directory -Path $PARTIAL_HOME, $PARTIAL_RUNTIME -Force
-Invoke-SideEffect -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"rate_limits`":{`"five_hour`":{`"used_percentage`":30,`"resets_at`":$($NOW+12000)},`"seven_day`":{`"used_percentage`":15,`"resets_at`":$($NOW+500000)}}}" -Env @{ HOME = $PARTIAL_HOME; USERPROFILE = $PARTIAL_HOME; XDG_RUNTIME_DIR = $PARTIAL_RUNTIME }
-$script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"cost`":{`"total_cost_usd`":1.23},`"rate_limits`":{`"seven_day`":{`"used_percentage`":18,`"resets_at`":$($NOW+400000)}}}" -Env @{ HOME = $PARTIAL_HOME; USERPROFILE = $PARTIAL_HOME; XDG_RUNTIME_DIR = $PARTIAL_RUNTIME }
-Assert-Line    "partial live missing five_hour renders 5h --" 2 '5h: --'
-Assert-Line    "partial live keeps live seven_day"            2 '7d: 18%'
-Assert-LineNot "partial live does not show session cost"      2 '\$1\.23'
-$script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"cost`":{`"total_cost_usd`":1.23}}" -Env @{ HOME = $PARTIAL_HOME; USERPROFILE = $PARTIAL_HOME; XDG_RUNTIME_DIR = $PARTIAL_RUNTIME }
-Assert-Line "cache survives missing five_hour partial live"                  2 '5h: 30%'
-Assert-Line "cache keeps original seven_day after missing five_hour partial" 2 '7d: 15%'
-
-# ── Test 24: Partial live missing five_hour.resets_at does not overwrite cache ──
-Write-Host "Test 24: partial live missing five_hour resets_at"
-$script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"cost`":{`"total_cost_usd`":1.23},`"rate_limits`":{`"five_hour`":{`"used_percentage`":31},`"seven_day`":{`"used_percentage`":18,`"resets_at`":$($NOW+400000)}}}" -Env @{ HOME = $PARTIAL_HOME; USERPROFILE = $PARTIAL_HOME; XDG_RUNTIME_DIR = $PARTIAL_RUNTIME }
-Assert-Line    "partial live missing five_hour resets_at keeps 5h percent" 2 '5h: 31%'
-Assert-LineNot "partial live missing five_hour resets_at hides cost"       2 '\$1\.23'
-$script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"cost`":{`"total_cost_usd`":1.23}}" -Env @{ HOME = $PARTIAL_HOME; USERPROFILE = $PARTIAL_HOME; XDG_RUNTIME_DIR = $PARTIAL_RUNTIME }
-Assert-Line "cache survives missing five_hour resets_at"           2 '5h: 30%'
-Assert-Line "cache keeps original seven_day after missing resets_at" 2 '7d: 15%'
-
-# ── Test 25: Partial live missing seven_day does not overwrite cache ──
-Write-Host "Test 25: partial live missing seven_day"
-$script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"cost`":{`"total_cost_usd`":1.23},`"rate_limits`":{`"five_hour`":{`"used_percentage`":29,`"resets_at`":$($NOW+11000)}}}" -Env @{ HOME = $PARTIAL_HOME; USERPROFILE = $PARTIAL_HOME; XDG_RUNTIME_DIR = $PARTIAL_RUNTIME }
-Assert-Line    "partial live keeps live five_hour"           2 '5h: 29%'
-Assert-Line    "partial live missing seven_day renders 7d --" 2 '7d: --'
-Assert-LineNot "partial live missing seven_day hides cost"    2 '\$1\.23'
-$script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"cost`":{`"total_cost_usd`":1.23}}" -Env @{ HOME = $PARTIAL_HOME; USERPROFILE = $PARTIAL_HOME; XDG_RUNTIME_DIR = $PARTIAL_RUNTIME }
-Assert-Line "cache keeps original five_hour after missing seven_day" 2 '5h: 30%'
-Assert-Line "cache survives missing seven_day partial live"          2 '7d: 15%'
-
-# ── Test 26: Expired live snapshot does not overwrite a good cache ──
-Write-Host "Test 26: expired live snapshot does not overwrite cache"
-$LE_HOME    = Join-Path $script:TestTmp 'live-expired-home'
-$LE_RUNTIME = Join-Path $script:TestTmp 'live-expired-runtime'
-$null = New-Item -ItemType Directory -Path $LE_HOME, $LE_RUNTIME -Force
-Invoke-SideEffect -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"rate_limits`":{`"five_hour`":{`"used_percentage`":30,`"resets_at`":$($NOW+12000)},`"seven_day`":{`"used_percentage`":15,`"resets_at`":$($NOW+500000)}}}" -Env @{ HOME = $LE_HOME; USERPROFILE = $LE_HOME; XDG_RUNTIME_DIR = $LE_RUNTIME }
-Invoke-SideEffect -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"rate_limits`":{`"five_hour`":{`"used_percentage`":99,`"resets_at`":$NOW},`"seven_day`":{`"used_percentage`":66,`"resets_at`":$($NOW+400000)}}}" -Env @{ HOME = $LE_HOME; USERPROFILE = $LE_HOME; XDG_RUNTIME_DIR = $LE_RUNTIME }
-$script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"cost`":{`"total_cost_usd`":1.23}}" -Env @{ HOME = $LE_HOME; USERPROFILE = $LE_HOME; XDG_RUNTIME_DIR = $LE_RUNTIME }
-Assert-Line "expired live R5 keeps cached five_hour" 2 '5h: 30%'
-Assert-Line "expired live R5 keeps cached seven_day" 2 '7d: 15%'
-Invoke-SideEffect -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"rate_limits`":{`"five_hour`":{`"used_percentage`":30,`"resets_at`":$($NOW+12000)},`"seven_day`":{`"used_percentage`":15,`"resets_at`":$($NOW+500000)}}}" -Env @{ HOME = $LE_HOME; USERPROFILE = $LE_HOME; XDG_RUNTIME_DIR = $LE_RUNTIME }
-Invoke-SideEffect -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"rate_limits`":{`"five_hour`":{`"used_percentage`":66,`"resets_at`":$($NOW+11000)},`"seven_day`":{`"used_percentage`":99,`"resets_at`":$NOW}}}" -Env @{ HOME = $LE_HOME; USERPROFILE = $LE_HOME; XDG_RUNTIME_DIR = $LE_RUNTIME }
-$script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"cost`":{`"total_cost_usd`":1.23}}" -Env @{ HOME = $LE_HOME; USERPROFILE = $LE_HOME; XDG_RUNTIME_DIR = $LE_RUNTIME }
-Assert-Line "expired live R7 keeps cached five_hour" 2 '5h: 30%'
-Assert-Line "expired live R7 keeps cached seven_day" 2 '7d: 15%'
-
-# ── Test 27: Expired quota cache is rejected wholesale ──
-Write-Host "Test 27: expired quota cache is rejected"
-$EX_HOME    = Join-Path $script:TestTmp 'expired-home'
-$EX_RUNTIME = Join-Path $script:TestTmp 'expired-runtime'
-$EX_ROOT    = Join-Path $EX_RUNTIME 'claude-pace'
-$null = New-Item -ItemType Directory -Path $EX_HOME, $EX_ROOT -Force
-Set-Content -LiteralPath (Get-QuotaCachePath $EX_ROOT) -Value "30|15|$NOW|$($NOW + 500000)" -NoNewline
-$script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"cost`":{`"total_cost_usd`":1.23}}" -Env @{ HOME = $EX_HOME; USERPROFILE = $EX_HOME; XDG_RUNTIME_DIR = $EX_RUNTIME }
-Assert-Line "expired R5 rejects whole snapshot"     2 '5h: --'
-Assert-Line "expired R5 also rejects cached 7d"     2 '7d: --'
-Assert-Line "expired R5 keeps session cost"         2 '\$1\.23'
-Set-Content -LiteralPath (Get-QuotaCachePath $EX_ROOT) -Value "30|15|$($NOW + 12000)|$NOW" -NoNewline
-$script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"cost`":{`"total_cost_usd`":1.23}}" -Env @{ HOME = $EX_HOME; USERPROFILE = $EX_HOME; XDG_RUNTIME_DIR = $EX_RUNTIME }
-Assert-Line "expired R7 also rejects cached 5h"     2 '5h: --'
-Assert-Line "expired R7 rejects whole snapshot"     2 '7d: --'
-Assert-Line "expired R7 keeps session cost"         2 '\$1\.23'
-
-# ── Test 28: Empty stdin stays Claude ──
-Write-Host "Test 28: empty stdin still returns Claude"
+# ── Test 20: Empty stdin stays Claude ──
+Write-Host "Test 20: empty stdin still returns Claude"
 $script:CurrentOutput = Invoke-Statusline -Json ''
 Assert-LineCount "empty stdin stays single line" 1
 Assert-Line      "empty stdin prints Claude"     1 '^Claude$'
 
-# ── Test 29: No safe cache root degrades cleanly ──
+# ── Test 21: No safe cache root still renders placeholder usage path ──
 # Force every cache-root candidate at a path that can't be turned into a directory: an
 # existing FILE. New-Item on `<file>/claude-pace` fails because the parent isn't a dir,
 # so all three branches (XDG_RUNTIME_DIR / LOCALAPPDATA / $HOME/.cache) are rejected and
-# CACHE_OK = $false.
-Write-Host "Test 29: no safe cache root keeps session cost"
+# CACHE_OK = $false. Output must still render placeholders + session cost.
+Write-Host "Test 21: no safe cache root keeps placeholders + cost"
 $NO_CACHE_FILE = Join-Path $script:TestTmp 'no-cache.file'
 [IO.File]::WriteAllText($NO_CACHE_FILE, '')
 $script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"cost`":{`"total_cost_usd`":1.23}}" -Env @{ HOME = $NO_CACHE_FILE; USERPROFILE = $NO_CACHE_FILE; LOCALAPPDATA = $NO_CACHE_FILE; XDG_RUNTIME_DIR = '' }
-Assert-Line "no quota source keeps 5h --"        2 '5h: --'
-Assert-Line "no quota source keeps session cost" 2 '\$1\.23'
+Assert-Line "no safe cache root keeps 5h --"        2 '5h: --'
+Assert-Line "no safe cache root keeps 7d --"        2 '7d: --'
+Assert-Line "no safe cache root keeps session cost" 2 '\$1\.23'
 
-# ── Test 30: Explicit null rate_limits reuses cached quota ──
-Write-Host "Test 30: explicit null rate_limits reuses cache"
+# ── Test 22: Explicit null rate_limits still shows placeholders + cost ──
+Write-Host "Test 22: explicit null rate_limits shows placeholders"
 $NULL_HOME    = Join-Path $script:TestTmp 'null-home'
 $NULL_RUNTIME = Join-Path $script:TestTmp 'null-runtime'
 $null = New-Item -ItemType Directory -Path $NULL_HOME, $NULL_RUNTIME -Force
-Invoke-SideEffect -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"rate_limits`":{`"five_hour`":{`"used_percentage`":30,`"resets_at`":$($NOW+12000)},`"seven_day`":{`"used_percentage`":15,`"resets_at`":$($NOW+500000)}}}" -Env @{ HOME = $NULL_HOME; USERPROFILE = $NULL_HOME; XDG_RUNTIME_DIR = $NULL_RUNTIME }
 $script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"cost`":{`"total_cost_usd`":1.23},`"rate_limits`":null}" -Env @{ HOME = $NULL_HOME; USERPROFILE = $NULL_HOME; XDG_RUNTIME_DIR = $NULL_RUNTIME }
-Assert-Line    "null rate_limits reuses cached 5h" 2 '5h: 30%'
-Assert-Line    "null rate_limits reuses cached 7d" 2 '7d: 15%'
-Assert-LineNot "null rate_limits suppresses cost"  2 '\$1\.23'
+Assert-Line "null rate_limits shows 5h --"        2 '5h: --'
+Assert-Line "null rate_limits shows 7d --"        2 '7d: --'
+Assert-Line "null rate_limits shows session cost" 2 '\$1\.23'
 
-# ── Test 31: Empty-object rate_limits behaves like partial live data ──
-Write-Host "Test 31: empty-object rate_limits uses live partial behavior"
+# ── Test 23: Empty-object rate_limits treated as partial live (placeholders, no cost) ──
+# rate_limits:{} means CC sent the field but with no contents — handled as partial
+# live data, not as "rate_limits absent". Cost stays suppressed because HAS_RL=$true.
+Write-Host "Test 23: empty-object rate_limits uses live partial behavior"
 $script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"cost`":{`"total_cost_usd`":1.23},`"rate_limits`":{}}" -Env @{ HOME = $NULL_HOME; USERPROFILE = $NULL_HOME; XDG_RUNTIME_DIR = $NULL_RUNTIME }
 Assert-Line    "empty-object rate_limits shows 5h --" 2 '5h: --'
 Assert-Line    "empty-object rate_limits shows 7d --" 2 '7d: --'
 Assert-LineNot "empty-object rate_limits hides cost"  2 '\$1\.23'
 
-# ── Test 34: Effort level words for all five levels (settings.json source) ──
-Write-Host "Test 34: effort level words"
+# ── Test 24: Partial live (only seven_day) renders 5h -- and live 7d ──
+Write-Host "Test 24: partial live (only seven_day) renders 5h -- and live 7d"
+$PARTIAL_HOME    = Join-Path $script:TestTmp 'partial-home'
+$PARTIAL_RUNTIME = Join-Path $script:TestTmp 'partial-runtime'
+$null = New-Item -ItemType Directory -Path $PARTIAL_HOME, $PARTIAL_RUNTIME -Force
+$script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"cost`":{`"total_cost_usd`":1.23},`"rate_limits`":{`"seven_day`":{`"used_percentage`":18,`"resets_at`":$($NOW+400000)}}}" -Env @{ HOME = $PARTIAL_HOME; USERPROFILE = $PARTIAL_HOME; XDG_RUNTIME_DIR = $PARTIAL_RUNTIME }
+Assert-Line    "partial live missing five_hour renders 5h --" 2 '5h: --'
+Assert-Line    "partial live keeps live seven_day"            2 '7d: 18%'
+Assert-LineNot "live rate_limits suppresses session cost"     2 '\$1\.23'
+
+# ── Test 25: Effort level words for all five levels (settings.json source) ──
+Write-Host "Test 25: effort level words"
 $EF_HOME    = Join-Path $script:TestTmp 'effort-home'
 $EF_RUNTIME = Join-Path $script:TestTmp 'effort-runtime'
 $null = New-Item -ItemType Directory -Path (Join-Path $EF_HOME '.claude'), $EF_RUNTIME -Force
@@ -430,8 +367,8 @@ Remove-Item -LiteralPath (Join-Path $EF_HOME '.claude/settings.json') -Force -Er
 $script:CurrentOutput = Invoke-Statusline -Json (Effort-Json '') -Env @{ HOME = $EF_HOME; USERPROFILE = $EF_HOME; XDG_RUNTIME_DIR = $EF_RUNTIME }
 Assert-Line "absent settings.json falls back to medium" 1 ' medium '
 
-# ── Test 35: Effort level from stdin (CC ≥ 2.1.119) ──
-Write-Host "Test 35: effort level from stdin"
+# ── Test 26: Effort level from stdin (CC ≥ 2.1.119) ──
+Write-Host "Test 26: effort level from stdin"
 $SE_HOME    = Join-Path $script:TestTmp 'stdin-effort-home'
 $SE_RUNTIME = Join-Path $script:TestTmp 'stdin-effort-runtime'
 $null = New-Item -ItemType Directory -Path (Join-Path $SE_HOME '.claude'), $SE_RUNTIME -Force
@@ -441,15 +378,15 @@ foreach ($lvl in @('low','medium','high','xhigh','max')) {
     Assert-Aligned "| aligned for stdin effort $lvl"
 }
 
-# ── Test 36: Stdin effort.level overrides settings.json effortLevel ──
-Write-Host "Test 36: stdin effort overrides settings"
+# ── Test 27: Stdin effort.level overrides settings.json effortLevel ──
+Write-Host "Test 27: stdin effort overrides settings"
 Set-Content -LiteralPath (Join-Path $SE_HOME '.claude/settings.json') -Value '{"effortLevel":"low"}' -NoNewline
 $script:CurrentOutput = Invoke-Statusline -Json (Effort-Json 'max') -Env @{ HOME = $SE_HOME; USERPROFILE = $SE_HOME; XDG_RUNTIME_DIR = $SE_RUNTIME }
 Assert-Line    "stdin effort.level wins over settings" 1 ' max '
 Assert-Aligned "| aligned with stdin override"
 
-# ── Test 37: Truncation budget (28) fits longest word without ellipsis ──
-Write-Host "Test 37: truncation budget fits longest word"
+# ── Test 28: Truncation budget (28) fits longest word without ellipsis ──
+Write-Host "Test 28: truncation budget fits longest word"
 $script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Sonnet 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"effort`":{`"level`":`"medium`"},`"rate_limits`":{`"five_hour`":{`"used_percentage`":30,`"resets_at`":$($NOW+12000)},`"seven_day`":{`"used_percentage`":15,`"resets_at`":$($NOW+500000)}}}"
 Assert-Line    "Sonnet 4.6 (200K) medium fits without ellipsis" 1 'Sonnet 4\.6 \(200K\) medium'
 Assert-LineNot "no ellipsis on medium with mid-length model"    1 '\.\.\.'

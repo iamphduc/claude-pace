@@ -23,8 +23,8 @@ Tuned for Windows terminals (Consolas, OEM codepages):
 Same invariants:
 
 - Cache root: `$XDG_RUNTIME_DIR` → `$LOCALAPPDATA\claude-pace` → `$HOME\.cache\claude-pace`. Never `/tmp`/`%TEMP%`. None safe → `$CACHE_OK = $false`.
-- Cache record: `[char]0x1F` between fields, legacy `|` on read. **Wire-compat with bash caches.**
-- Quota fallback: same rules (only complete future-reset snapshots written, partial never overwrites, expired rejected wholesale, cost suppressed on hit).
+- Cache record: `[char]0x1F` between fields, legacy `|` on read. **Wire-compat with bash caches.** (Only git-info cache now; quota cache was removed in v0.9.0.)
+- Quota: stdin `rate_limits` only. Absent → `5h --` / `7d --` + session cost. **No cache fallback** — see `docs/decisions/2026-05-20-quota-cache-removal.md` for why. Legacy `claude-sl-quota` files from v0.8.x are orphans, ignored.
 - Atomic writes: tmp + `Move-Item -Force` (atomic on NTFS within volume).
 - Single `ConvertFrom-Json` for stdin. Settings JSON read once into var, validated.
 

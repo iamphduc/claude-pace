@@ -129,7 +129,6 @@ foreach ($base in $bases) {
     }
     if (Test-SafeCacheDir $cand) { $_CD = $cand; $CACHE_OK = $true; break }
 }
-$QC = if ($CACHE_OK) { Join-Path $_CD 'claude-sl-quota' } else { $null }
 
 # ── Cache record helpers ──
 function Read-CacheRecord {
@@ -164,18 +163,6 @@ function Read-CacheFile {
         if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $null }   # don't follow symlinks on read
         return Get-Content -LiteralPath $path -Raw -ErrorAction Stop
     } catch { return $null }
-}
-
-# Validate quota snapshot: integer used %, integer reset epochs, both resets in the future.
-function Test-QuotaSnapshot {
-    param($u5, $u7, $r5, $r7)
-    $i = 0
-    if (-not [int]::TryParse([string]$u5, [ref]$i)) { return $false }
-    if (-not [int]::TryParse([string]$u7, [ref]$i)) { return $false }
-    $r5i = 0; $r7i = 0
-    if (-not [int]::TryParse([string]$r5, [ref]$r5i)) { return $false }
-    if (-not [int]::TryParse([string]$r7, [ref]$r7i)) { return $false }
-    return ($r5i -gt $NOW -and $r7i -gt $NOW)
 }
 
 function Get-MinutesUntil {
@@ -296,43 +283,19 @@ if ($BR) {
     if ($L1R.Length -gt 25) { $L1R = $L1R.Substring(0, 25) + '...' }
 }
 
-# ── Quota: live or cache fallback ──
+# ── Quota: stdin rate_limits only ──
+# When rate_limits is absent we show placeholders and the session cost. No cache
+# fallback: stdin carries no provider/account identifier, so a previous-run
+# snapshot can't be proven to belong to the current session. See
+# docs/decisions/2026-05-20-quota-cache-removal.md.
 $SHOW_COST = $false
 $RM5 = $null; $RM7 = $null
 if ($HAS_RL) {
     $RM5 = Get-MinutesUntil $R5
     $RM7 = Get-MinutesUntil $R7
-    if ($QC -and (Test-QuotaSnapshot $U5 $U7 $R5 $R7)) {
-        # Skip rewrite when unchanged (mirror bash _write_quota_snapshot_if_changed).
-        $changed = $true
-        $line = Read-CacheFile $QC
-        if ($null -ne $line) {
-            $existing = Read-CacheRecord $line
-            if ($existing.Count -ge 4 -and
-                "$($existing[0])" -eq "$U5" -and
-                "$($existing[1])" -eq "$U7" -and
-                "$($existing[2])" -eq "$R5" -and
-                "$($existing[3])" -eq "$R7") {
-                $changed = $false
-            }
-        }
-        if ($changed) { Save-CacheRecord -path $QC -fields @($U5, $U7, $R5, $R7) | Out-Null }
-    }
 } else {
-    $U5 = '--'; $U7 = '--'; $RM5 = $null; $RM7 = $null
+    $U5 = '--'; $U7 = '--'
     $SHOW_COST = $true
-    if ($QC) {
-        $line = Read-CacheFile $QC
-        if ($null -ne $line) {
-            $f = Read-CacheRecord $line
-            if ($f.Count -ge 4 -and (Test-QuotaSnapshot $f[0] $f[1] $f[2] $f[3])) {
-                $U5 = [int]$f[0]; $U7 = [int]$f[1]; $R5 = [int]$f[2]; $R7 = [int]$f[3]
-                $RM5 = Get-MinutesUntil $R5
-                $RM7 = Get-MinutesUntil $R7
-                $SHOW_COST = $false
-            }
-        }
-    }
 }
 
 # ── Token count compact formatter ──
