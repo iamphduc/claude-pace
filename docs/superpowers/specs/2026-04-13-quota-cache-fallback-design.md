@@ -1,5 +1,7 @@
 # Quota Cache Fallback Design
 
+> **ARCHIVED 2026-05-20.** Superseded by removal in v0.9.0. The design assumed a single account per host and used a global cache key; multi-provider users surfaced silent cross-contamination (see PR #14). Without a stdin-provided account/provider identifier the cached snapshot's provenance is unverifiable, so the feature was removed rather than re-keyed. See [docs/decisions/2026-05-20-quota-cache-removal.md](../../decisions/2026-05-20-quota-cache-removal.md). Kept for historical context only.
+
 Date: 2026-04-13
 Project: `claude-pace`
 Scope: missing-`rate_limits` fallback only

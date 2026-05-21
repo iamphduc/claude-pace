@@ -117,11 +117,6 @@ git_cache_path_for_dir() {
   printf '/tmp/claude-sl-git-%s\n' "$(_hash_dir "$dir")"
 }
 
-quota_cache_path_for_root() {
-  local cache_root="$1"
-  printf '%s/claude-sl-quota\n' "$cache_root"
-}
-
 run_without_safe_cache_root() {
   local input="$1"
   env HOME="/dev/null" XDG_RUNTIME_DIR="" USER=tester PATH="$PATH" \
@@ -309,8 +304,12 @@ else
   echo "    dir_b=$DIR_B hash=$HASH_B"
 fi
 
-# ── Test 18: No rate_limits should not call Usage API ──
-echo "Test 18: no rate_limits skips usage api"
+# ── Test 18: No rate_limits shows placeholders + session cost (no network, no cache) ──
+# Behavior contract since v0.9.0: when stdin omits rate_limits, claude-pace must
+# show "5h --" / "7d --" and may show session cost. It must NOT call any HTTP
+# fallback, and it must NOT consult a quota cache file. See
+# docs/decisions/2026-05-20-quota-cache-removal.md.
+echo "Test 18: no rate_limits shows placeholders + cost, no network"
 NO_RL_BIN="$TEST_TMP/no-rate-limits-bin"
 NO_RL_MARKER="$TEST_TMP/no-rate-limits-marker"
 mkdir -p "$NO_RL_BIN"
@@ -328,205 +327,82 @@ OUTPUT=$(env HOME="/dev/null" XDG_RUNTIME_DIR="" USER=tester PATH="$NO_RL_BIN:$P
 JSON
   )" | strip_ansi)
 assert_missing_path "curl not invoked when rate_limits missing" "$NO_RL_MARKER"
+assert_line "5h shows -- when rate_limits missing" 2 '5h --'
+assert_line "7d shows -- when rate_limits missing" 2 '7d --'
 # shellcheck disable=SC2016  # single quotes intentional: regex pattern, not expansion
 assert_line "session cost shown when rate_limits missing" 2 '\$1\.23'
 
-# ── Test 19: Live rate_limits writes quota cache ──
-echo "Test 19: live rate_limits writes quota cache"
-QUOTA_HOME="$TEST_TMP/quota-home"
-QUOTA_RUNTIME="$TEST_TMP/quota-runtime"
-QUOTA_CACHE_ROOT="$QUOTA_RUNTIME/claude-pace"
-mkdir -p "$QUOTA_HOME" "$QUOTA_RUNTIME"
-run_side_effect_with_env "$QUOTA_HOME" "$QUOTA_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"rate_limits":{"five_hour":{"used_percentage":30,"resets_at":'"$((NOW + 12000))"'},"seven_day":{"used_percentage":15,"resets_at":'"$((NOW + 500000))"'}}}'
-QC=$(quota_cache_path_for_root "$QUOTA_CACHE_ROOT")
-if [[ -f "$QC" ]]; then
+# ── Test 19: Orphan quota cache file from previous versions is ignored ──
+# v0.8.x left ~/.cache/claude-pace/claude-sl-quota* files on user machines.
+# v0.9.0 must not read them — output must look identical to a fresh install.
+echo "Test 19: orphan quota cache file is ignored"
+ORPHAN_HOME="$TEST_TMP/orphan-home"
+ORPHAN_RUNTIME="$TEST_TMP/orphan-runtime"
+ORPHAN_CACHE_ROOT="$ORPHAN_RUNTIME/claude-pace"
+mkdir -p "$ORPHAN_HOME" "$ORPHAN_RUNTIME" "$ORPHAN_CACHE_ROOT"
+# Plant a plausible-looking legacy v0.8.x quota record (still-future resets).
+printf '77|66|9999999999|9999999999\n' >"$ORPHAN_CACHE_ROOT/claude-sl-quota"
+OUTPUT=$(run_with_env "$ORPHAN_HOME" "$ORPHAN_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"cost":{"total_cost_usd":1.23}}')
+assert_line "orphan cache ignored: 5h --" 2 '5h --'
+assert_line "orphan cache ignored: 7d --" 2 '7d --'
+assert_line "orphan cache does not suppress session cost" 2 '\$1\.23'
+# The file is also not rewritten or removed — orphan, but harmless.
+if [[ -f "$ORPHAN_CACHE_ROOT/claude-sl-quota" ]]; then
   PASS=$((PASS + 1))
-  echo "  PASS: quota cache file created from live rate_limits"
+  echo "  PASS: orphan cache file left untouched"
 else
   FAIL=$((FAIL + 1))
-  echo "  FAIL: quota cache file created from live rate_limits"
-  echo "    missing path: $QC"
+  echo "  FAIL: orphan cache file left untouched"
 fi
 
-# ── Test 20: Missing rate_limits reuses cached quota and suppresses cost ──
-echo "Test 20: missing rate_limits reuses cached quota"
-OUTPUT=$(run_with_env "$QUOTA_HOME" "$QUOTA_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"cost":{"total_cost_usd":1.23}}')
-assert_line "cached 5h quota shown" 2 '5h 30%'
-assert_line "cached 7d quota shown" 2 '7d 15%'
-assert_line_not "cached quota suppresses session cost" 2 '\$1\.23'
-
-# ── Test 21: Invalid quota cache degrades to no-quota fallback ──
-echo "Test 21: invalid quota cache degrades cleanly"
-BAD_HOME="$TEST_TMP/bad-home"
-BAD_RUNTIME="$TEST_TMP/bad-runtime"
-BAD_CACHE_ROOT="$BAD_RUNTIME/claude-pace"
-mkdir -p "$BAD_HOME" "$BAD_RUNTIME" "$BAD_CACHE_ROOT"
-QC=$(quota_cache_path_for_root "$BAD_CACHE_ROOT")
-printf 'abc|15|9999999999|9999999999\n' >"$QC"
-OUTPUT=$(run_with_env "$BAD_HOME" "$BAD_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"cost":{"total_cost_usd":1.23}}')
-assert_line "invalid cache falls back to no quota 5h" 2 '5h --'
-assert_line "invalid cache falls back to no quota 7d" 2 '7d --'
-assert_line "invalid cache keeps session cost" 2 '\$1\.23'
-
-# ── Test 22: Safe cache root with no quota file degrades to no-quota fallback ──
-echo "Test 22: safe cache root without quota cache file"
-EMPTY_HOME="$TEST_TMP/empty-home"
-EMPTY_RUNTIME="$TEST_TMP/empty-runtime"
-mkdir -p "$EMPTY_HOME" "$EMPTY_RUNTIME"
-OUTPUT=$(run_with_env "$EMPTY_HOME" "$EMPTY_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"cost":{"total_cost_usd":1.23}}')
-assert_line "safe cache root without file keeps 5h --" 2 '5h --'
-assert_line "safe cache root without file keeps 7d --" 2 '7d --'
-assert_line "safe cache root without file keeps session cost" 2 '\$1\.23'
-
-# ── Test 23: Partial live payload missing five_hour does not overwrite cache ──
-echo "Test 23: partial live missing five_hour"
-PARTIAL_HOME="$TEST_TMP/partial-home"
-PARTIAL_RUNTIME="$TEST_TMP/partial-runtime"
-mkdir -p "$PARTIAL_HOME" "$PARTIAL_RUNTIME"
-run_side_effect_with_env "$PARTIAL_HOME" "$PARTIAL_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"rate_limits":{"five_hour":{"used_percentage":30,"resets_at":'"$((NOW + 12000))"'},"seven_day":{"used_percentage":15,"resets_at":'"$((NOW + 500000))"'}}}'
-OUTPUT=$(run_with_env "$PARTIAL_HOME" "$PARTIAL_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"cost":{"total_cost_usd":1.23},"rate_limits":{"seven_day":{"used_percentage":18,"resets_at":'"$((NOW + 400000))"'}}}')
-assert_line "partial live missing five_hour renders 5h --" 2 '5h --'
-assert_line "partial live keeps live seven_day" 2 '7d 18%'
-assert_line_not "partial live does not show session cost" 2 '\$1\.23'
-OUTPUT=$(run_with_env "$PARTIAL_HOME" "$PARTIAL_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"cost":{"total_cost_usd":1.23}}')
-assert_line "cache survives missing five_hour partial live" 2 '5h 30%'
-assert_line "cache keeps original seven_day after missing five_hour partial live" 2 '7d 15%'
-
-# ── Test 24: Partial live payload missing five_hour.resets_at does not overwrite cache ──
-echo "Test 24: partial live missing five_hour resets_at"
-OUTPUT=$(run_with_env "$PARTIAL_HOME" "$PARTIAL_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"cost":{"total_cost_usd":1.23},"rate_limits":{"five_hour":{"used_percentage":31},"seven_day":{"used_percentage":18,"resets_at":'"$((NOW + 400000))"'}}}')
-assert_line "partial live missing five_hour resets_at keeps 5h percent" 2 '5h 31%'
-assert_line_not "partial live missing five_hour resets_at hides cost" 2 '\$1\.23'
-OUTPUT=$(run_with_env "$PARTIAL_HOME" "$PARTIAL_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"cost":{"total_cost_usd":1.23}}')
-assert_line "cache survives missing five_hour resets_at" 2 '5h 30%'
-assert_line "cache keeps original seven_day after missing five_hour resets_at" 2 '7d 15%'
-
-# ── Test 25: Partial live payload missing seven_day does not overwrite cache ──
-echo "Test 25: partial live missing seven_day"
-OUTPUT=$(run_with_env "$PARTIAL_HOME" "$PARTIAL_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"cost":{"total_cost_usd":1.23},"rate_limits":{"five_hour":{"used_percentage":29,"resets_at":'"$((NOW + 11000))"'}}}')
-assert_line "partial live keeps live five_hour" 2 '5h 29%'
-assert_line "partial live missing seven_day renders 7d --" 2 '7d --'
-assert_line_not "partial live missing seven_day hides cost" 2 '\$1\.23'
-OUTPUT=$(run_with_env "$PARTIAL_HOME" "$PARTIAL_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"cost":{"total_cost_usd":1.23}}')
-assert_line "cache keeps original five_hour after missing seven_day partial live" 2 '5h 30%'
-assert_line "cache survives missing seven_day partial live" 2 '7d 15%'
-
-# ── Test 26: Expired live snapshot does not overwrite a good cache ──
-echo "Test 26: expired live snapshot does not overwrite cache"
-LIVE_EXPIRED_HOME="$TEST_TMP/live-expired-home"
-LIVE_EXPIRED_RUNTIME="$TEST_TMP/live-expired-runtime"
-mkdir -p "$LIVE_EXPIRED_HOME" "$LIVE_EXPIRED_RUNTIME"
-run_side_effect_with_env "$LIVE_EXPIRED_HOME" "$LIVE_EXPIRED_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"rate_limits":{"five_hour":{"used_percentage":30,"resets_at":'"$((NOW + 12000))"'},"seven_day":{"used_percentage":15,"resets_at":'"$((NOW + 500000))"'}}}'
-run_side_effect_with_env "$LIVE_EXPIRED_HOME" "$LIVE_EXPIRED_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":'"$NOW"'},"seven_day":{"used_percentage":66,"resets_at":'"$((NOW + 400000))"'}}}'
-OUTPUT=$(run_with_env "$LIVE_EXPIRED_HOME" "$LIVE_EXPIRED_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"cost":{"total_cost_usd":1.23}}')
-assert_line "expired live R5 keeps cached five_hour" 2 '5h 30%'
-assert_line "expired live R5 keeps cached seven_day" 2 '7d 15%'
-run_side_effect_with_env "$LIVE_EXPIRED_HOME" "$LIVE_EXPIRED_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"rate_limits":{"five_hour":{"used_percentage":30,"resets_at":'"$((NOW + 12000))"'},"seven_day":{"used_percentage":15,"resets_at":'"$((NOW + 500000))"'}}}'
-run_side_effect_with_env "$LIVE_EXPIRED_HOME" "$LIVE_EXPIRED_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"rate_limits":{"five_hour":{"used_percentage":66,"resets_at":'"$((NOW + 11000))"'},"seven_day":{"used_percentage":99,"resets_at":'"$NOW"'}}}'
-OUTPUT=$(run_with_env "$LIVE_EXPIRED_HOME" "$LIVE_EXPIRED_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"cost":{"total_cost_usd":1.23}}')
-assert_line "expired live R7 keeps cached five_hour" 2 '5h 30%'
-assert_line "expired live R7 keeps cached seven_day" 2 '7d 15%'
-
-# ── Test 27: Expired quota cache is rejected ──
-echo "Test 27: expired quota cache is rejected"
-EXPIRED_HOME="$TEST_TMP/expired-home"
-EXPIRED_RUNTIME="$TEST_TMP/expired-runtime"
-EXPIRED_CACHE_ROOT="$EXPIRED_RUNTIME/claude-pace"
-mkdir -p "$EXPIRED_HOME" "$EXPIRED_RUNTIME" "$EXPIRED_CACHE_ROOT"
-QC=$(quota_cache_path_for_root "$EXPIRED_CACHE_ROOT")
-printf '30|15|%s|%s\n' "$NOW" "$((NOW + 500000))" >"$QC"
-OUTPUT=$(run_with_env "$EXPIRED_HOME" "$EXPIRED_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"cost":{"total_cost_usd":1.23}}')
-assert_line "expired R5 rejects whole snapshot" 2 '5h --'
-assert_line "expired R5 also rejects cached seven_day" 2 '7d --'
-assert_line "expired R5 keeps session cost" 2 '\$1\.23'
-printf '30|15|%s|%s\n' "$((NOW + 12000))" "$NOW" >"$QC"
-OUTPUT=$(run_with_env "$EXPIRED_HOME" "$EXPIRED_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"cost":{"total_cost_usd":1.23}}')
-assert_line "expired R7 also rejects cached five_hour" 2 '5h --'
-assert_line "expired R7 rejects whole snapshot" 2 '7d --'
-assert_line "expired R7 keeps session cost" 2 '\$1\.23'
-
-# ── Test 28: Empty stdin stays Claude ──
-echo "Test 28: empty stdin still returns Claude"
+# ── Test 20: Empty stdin stays Claude ──
+echo "Test 20: empty stdin still returns Claude"
 OUTPUT=$(printf '' | bash claude-pace.sh 2>/dev/null | strip_ansi)
 assert_line_count "empty stdin stays single line" 1
 assert_line "empty stdin prints Claude" 1 '^Claude$'
 
-# ── Test 29: No safe cache root skips quota cache writes ──
-echo "Test 29: no safe cache root skips quota cache"
-OUTPUT=$(run_without_safe_cache_root "$(
-  cat <<JSON
-{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"$PWD"},"context_window":{"used_percentage":20,"context_window_size":200000},"rate_limits":{"five_hour":{"used_percentage":30,"resets_at":$((NOW + 12000))},"seven_day":{"used_percentage":15,"resets_at":$((NOW + 500000))}}}
-JSON
-)" | strip_ansi)
+# ── Test 21: No safe cache root still renders placeholder usage path ──
+echo "Test 21: no safe cache root still renders placeholders"
 OUTPUT=$(run_without_safe_cache_root "$(
   cat <<JSON
 {"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"$PWD"},"context_window":{"used_percentage":20,"context_window_size":200000},"cost":{"total_cost_usd":1.23}}
 JSON
 )" | strip_ansi)
 assert_line "no safe cache root keeps 5h --" 2 '5h --'
+assert_line "no safe cache root keeps 7d --" 2 '7d --'
 assert_line "no safe cache root keeps session cost" 2 '\$1\.23'
 
-# ── Test 30: Explicit null rate_limits reuses cached quota ──
-echo "Test 30: explicit null rate_limits reuses cache"
+# ── Test 22: Explicit null rate_limits still shows placeholders + cost ──
+echo "Test 22: explicit null rate_limits shows placeholders"
 NULL_HOME="$TEST_TMP/null-home"
 NULL_RUNTIME="$TEST_TMP/null-runtime"
 mkdir -p "$NULL_HOME" "$NULL_RUNTIME"
-run_side_effect_with_env "$NULL_HOME" "$NULL_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"rate_limits":{"five_hour":{"used_percentage":30,"resets_at":'"$((NOW + 12000))"'},"seven_day":{"used_percentage":15,"resets_at":'"$((NOW + 500000))"'}}}'
 OUTPUT=$(run_with_env "$NULL_HOME" "$NULL_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"cost":{"total_cost_usd":1.23},"rate_limits":null}')
-assert_line "null rate_limits reuses cached 5h quota" 2 '5h 30%'
-assert_line "null rate_limits reuses cached 7d quota" 2 '7d 15%'
-assert_line_not "null rate_limits suppresses session cost" 2 '\$1\.23'
+assert_line "null rate_limits shows 5h --" 2 '5h --'
+assert_line "null rate_limits shows 7d --" 2 '7d --'
+assert_line "null rate_limits shows session cost" 2 '\$1\.23'
 
-# ── Test 31: Empty-object rate_limits behaves like partial live data ──
-echo "Test 31: empty-object rate_limits uses live partial behavior"
+# ── Test 23: Empty-object rate_limits treated as partial live (placeholders, no cost) ──
+# rate_limits:{} means CC sent the field but with no contents — handled as partial
+# live data, not as "rate_limits absent". Cost stays suppressed because HAS_RL=1.
+echo "Test 23: empty-object rate_limits treated as partial live"
 OUTPUT=$(run_with_env "$NULL_HOME" "$NULL_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"cost":{"total_cost_usd":1.23},"rate_limits":{}}')
 assert_line "empty-object rate_limits shows 5h --" 2 '5h --'
 assert_line "empty-object rate_limits shows 7d --" 2 '7d --'
 assert_line_not "empty-object rate_limits suppresses session cost" 2 '\$1\.23'
 
-# ── Test 32: Live quota rewrite normalizes symlink cache file ──
-echo "Test 32: live quota rewrite replaces symlink quota cache"
-SYMLINK_QUOTA_HOME="$TEST_TMP/symlink-quota-home"
-SYMLINK_QUOTA_RUNTIME="$TEST_TMP/symlink-quota-runtime"
-SYMLINK_QUOTA_ROOT="$SYMLINK_QUOTA_RUNTIME/claude-pace"
-mkdir -p "$SYMLINK_QUOTA_HOME" "$SYMLINK_QUOTA_RUNTIME" "$SYMLINK_QUOTA_ROOT"
-printf '30|15|9999999999|9999999999\n' >"$TEST_TMP/real-quota-cache"
-ln -s "$TEST_TMP/real-quota-cache" "$(quota_cache_path_for_root "$SYMLINK_QUOTA_ROOT")"
-run_side_effect_with_env "$SYMLINK_QUOTA_HOME" "$SYMLINK_QUOTA_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"rate_limits":{"five_hour":{"used_percentage":30,"resets_at":9999999999},"seven_day":{"used_percentage":15,"resets_at":9999999999}}}'
-if [[ -L "$(quota_cache_path_for_root "$SYMLINK_QUOTA_ROOT")" ]]; then
-  FAIL=$((FAIL + 1))
-  echo "  FAIL: live quota rewrite replaces symlink quota cache"
-else
-  PASS=$((PASS + 1))
-  echo "  PASS: live quota rewrite replaces symlink quota cache"
-fi
+# ── Test 24: Partial live (only seven_day) renders 5h -- and live 7d ──
+echo "Test 24: partial live (only seven_day) renders 5h -- and live 7d"
+PARTIAL_HOME="$TEST_TMP/partial-home"
+PARTIAL_RUNTIME="$TEST_TMP/partial-runtime"
+mkdir -p "$PARTIAL_HOME" "$PARTIAL_RUNTIME"
+OUTPUT=$(run_with_env "$PARTIAL_HOME" "$PARTIAL_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"cost":{"total_cost_usd":1.23},"rate_limits":{"seven_day":{"used_percentage":18,"resets_at":'"$((NOW + 400000))"'}}}')
+assert_line "partial live missing five_hour renders 5h --" 2 '5h --'
+assert_line "partial live keeps live seven_day" 2 '7d 18%'
+assert_line_not "live rate_limits suppresses session cost" 2 '\$1\.23'
 
-# ── Test 33: Unreadable quota cache does not leak stderr on live path ──
-echo "Test 33: unreadable quota cache stays silent on live path"
-UNREADABLE_QUOTA_HOME="$TEST_TMP/unreadable-quota-home"
-UNREADABLE_QUOTA_RUNTIME="$TEST_TMP/unreadable-quota-runtime"
-UNREADABLE_QUOTA_ROOT="$UNREADABLE_QUOTA_RUNTIME/claude-pace"
-UNREADABLE_QUOTA_ERR="$TEST_TMP/unreadable-quota.err"
-mkdir -p "$UNREADABLE_QUOTA_HOME" "$UNREADABLE_QUOTA_RUNTIME" "$UNREADABLE_QUOTA_ROOT"
-printf '30|15|9999999999|9999999999\n' >"$(quota_cache_path_for_root "$UNREADABLE_QUOTA_ROOT")"
-chmod 000 "$(quota_cache_path_for_root "$UNREADABLE_QUOTA_ROOT")"
-env HOME="$UNREADABLE_QUOTA_HOME" XDG_RUNTIME_DIR="$UNREADABLE_QUOTA_RUNTIME" USER=tester PATH="$PATH" \
-  bash claude-pace.sh >/dev/null 2>"$UNREADABLE_QUOTA_ERR" <<JSON
-{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"$PWD"},"context_window":{"used_percentage":20,"context_window_size":200000},"rate_limits":{"five_hour":{"used_percentage":30,"resets_at":9999999999},"seven_day":{"used_percentage":15,"resets_at":9999999999}}}
-JSON
-chmod 600 "$(quota_cache_path_for_root "$UNREADABLE_QUOTA_ROOT")"
-if [[ ! -s "$UNREADABLE_QUOTA_ERR" ]]; then
-  PASS=$((PASS + 1))
-  echo "  PASS: unreadable quota cache stays silent on live path"
-else
-  FAIL=$((FAIL + 1))
-  echo "  FAIL: unreadable quota cache stays silent on live path"
-  echo "    stderr:"
-  sed 's/^/    /' "$UNREADABLE_QUOTA_ERR"
-fi
-
-# ── Test 34: Effort level words for all five levels ──
-echo "Test 34: effort level words"
+# ── Test 25: Effort level words for all five levels ──
+echo "Test 25: effort level words"
 EFFORT_HOME="$TEST_TMP/effort-home"
 EFFORT_RUNTIME="$TEST_TMP/effort-runtime"
 mkdir -p "$EFFORT_HOME/.claude" "$EFFORT_RUNTIME"
@@ -544,8 +420,8 @@ rm -f "$EFFORT_HOME/.claude/settings.json"
 OUTPUT=$(run_with_env "$EFFORT_HOME" "$EFFORT_RUNTIME" "$(effort_input)")
 assert_line "absent settings.json falls back to medium word" 1 ' medium '
 
-# ── Test 35: Effort level from stdin (CC ≥ 2.1.119) ──
-echo "Test 35: effort level from stdin"
+# ── Test 26: Effort level from stdin (CC ≥ 2.1.119) ──
+echo "Test 26: effort level from stdin"
 STDIN_EFFORT_HOME="$TEST_TMP/stdin-effort-home"
 STDIN_EFFORT_RUNTIME="$TEST_TMP/stdin-effort-runtime"
 mkdir -p "$STDIN_EFFORT_HOME/.claude" "$STDIN_EFFORT_RUNTIME"
@@ -560,17 +436,17 @@ for level in low medium high xhigh max; do
   assert_aligned "| aligned for stdin effort $level"
 done
 
-# ── Test 36: Stdin effort.level overrides settings.json effortLevel ──
-echo "Test 36: stdin effort overrides settings.json"
+# ── Test 27: Stdin effort.level overrides settings.json effortLevel ──
+echo "Test 27: stdin effort overrides settings.json"
 printf '{"effortLevel":"low"}\n' >"$STDIN_EFFORT_HOME/.claude/settings.json"
 OUTPUT=$(run_with_env "$STDIN_EFFORT_HOME" "$STDIN_EFFORT_RUNTIME" "$(effort_stdin_input "max")")
 assert_line "stdin effort.level wins over settings.json" 1 ' max '
 assert_aligned "| aligned with stdin override"
 rm -f "$STDIN_EFFORT_HOME/.claude/settings.json"
 
-# ── Test 37: Truncation budget (28) fits longest word without ellipsis ──
+# ── Test 28: Truncation budget (28) fits longest word without ellipsis ──
 # "Sonnet 4.6 (200K) medium" = 24 chars; budget=28 keeps it whole, budget=22 would clip to "Sonnet 4.6 (20… medium".
-echo "Test 37: truncation budget fits longest word"
+echo "Test 28: truncation budget fits longest word"
 OUTPUT=$(run '{"model":{"display_name":"Sonnet 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"effort":{"level":"medium"},"rate_limits":{"five_hour":{"used_percentage":30,"resets_at":'$((NOW + 12000))'},"seven_day":{"used_percentage":15,"resets_at":'$((NOW + 500000))'}}}')
 assert_line "Sonnet 4.6 (200K) medium fits without ellipsis" 1 'Sonnet 4\.6 \(200K\) medium'
 assert_line_not "no ellipsis on medium with mid-length model" 1 '…'

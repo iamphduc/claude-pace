@@ -65,17 +65,6 @@ _write_cache_record() {
     printf '%s\n' "$*"
   ) >"$tmp" && mv "$tmp" "$path"
 }
-# Avoids rewriting the quota cache when the live snapshot is unchanged.
-_write_quota_snapshot_if_changed() {
-  local path="$1" u5="$2" u7="$3" r5="$4" r7="$5"
-  if [ -f "$path" ] && [ ! -L "$path" ] && [ -r "$path" ] && _load_cache_record_file "$path"; then
-    [[ "${CACHE_FIELDS[0]:-}" == "$u5" ]] &&
-      [[ "${CACHE_FIELDS[1]:-}" == "$u7" ]] &&
-      [[ "${CACHE_FIELDS[2]:-}" == "$r5" ]] &&
-      [[ "${CACHE_FIELDS[3]:-}" == "$r7" ]] && return 0
-  fi
-  _write_cache_record "$path" "$u5" "$u7" "$r5" "$r7"
-}
 # Computes remaining whole minutes until a future epoch. Missing or expired
 # timestamps return an empty string so callers can skip countdown formatting.
 _minutes_until() {
@@ -84,16 +73,6 @@ _minutes_until() {
   mins=$(((epoch - NOW) / 60))
   ((mins < 0)) && mins=0
   printf '%s\n' "$mins"
-}
-# Valid quota snapshots must contain integer usage values and future reset
-# epochs for both windows. Partial or expired snapshots never enter the cache.
-_valid_quota_snapshot() {
-  local u5="$1" u7="$2" r5="$3" r7="$4"
-  [[ "$u5" =~ ^[0-9]+$ ]] || return 1
-  [[ "$u7" =~ ^[0-9]+$ ]] || return 1
-  [[ "$r5" =~ ^[0-9]+$ ]] || return 1
-  [[ "$r7" =~ ^[0-9]+$ ]] || return 1
-  ((r5 > NOW && r7 > NOW))
 }
 # Collects live Git metadata for DIR. On non-repos, leaves defaults in place
 # and returns non-zero so callers can decide whether to cache the empty result.
@@ -122,8 +101,6 @@ for _BASE in "${XDG_RUNTIME_DIR:-}" "${HOME}/.cache"; do
   CACHE_OK=1
   break
 done
-QC=""
-[[ "$CACHE_OK" == "1" ]] && QC="${_CD}/claude-sl-quota"
 # Returns true (exit 0) when file is missing or older than $2 seconds.
 _stale() { [ ! -f "$1" ] || [ $((NOW - $(stat -f%m "$1" 2>/dev/null || stat -c%Y "$1" 2>/dev/null || echo 0))) -gt "$2" ]; }
 
@@ -223,34 +200,18 @@ elif [[ "$IS_WT" == "1" ]]; then
   ((${#L1R} > 25)) && L1R="${L1R:0:25}…"
 fi
 
-# Usage data: read stdin rate_limits when available, otherwise show session cost.
+# Usage data: read stdin rate_limits when available. When absent we show
+# placeholders and the session cost instead of falling back to a possibly stale
+# (or wrong-account) cached snapshot. See docs/decisions/2026-05-20-quota-cache-removal.md.
 SHOW_COST=0
 if [[ "$HAS_RL" == "1" ]]; then
   # Stdin path: real-time, no network. U5/U7 already set by jq read above.
   # Guard: resets_at=0 means field missing, leave RM empty so _usage skips it.
   RM5=$(_minutes_until "$R5")
   RM7=$(_minutes_until "$R7")
-  if [[ -n "$QC" ]] && _valid_quota_snapshot "$U5" "$U7" "$R5" "$R7"; then
-    _write_quota_snapshot_if_changed "$QC" "$U5" "$U7" "$R5" "$R7" || true
-  fi
 else
   U5="--" U7="--" RM5="" RM7=""
   SHOW_COST=1
-  if [[ -n "$QC" ]] && _load_cache_record_file "$QC"; then
-    _CU5=${CACHE_FIELDS[0]:-}
-    _CU7=${CACHE_FIELDS[1]:-}
-    _CR5=${CACHE_FIELDS[2]:-}
-    _CR7=${CACHE_FIELDS[3]:-}
-    if _valid_quota_snapshot "$_CU5" "$_CU7" "$_CR5" "$_CR7"; then
-      U5="$_CU5"
-      U7="$_CU7"
-      R5="$_CR5"
-      R7="$_CR7"
-      RM5=$(_minutes_until "$R5")
-      RM7=$(_minutes_until "$R7")
-      SHOW_COST=0
-    fi
-  fi
 fi
 
 # Combined usage formatter: used% [pace delta] (countdown)

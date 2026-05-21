@@ -1,5 +1,7 @@
 # Quota Cache Fallback Implementation Plan
 
+> **ARCHIVED 2026-05-20.** The quota cache fallback this plan shipped (v0.8.1) was removed in v0.9.0. Account-level quota cannot be safely keyed without a provider/account identifier in stdin, and a stale wrong-account snapshot is worse than a `--` placeholder. See [docs/decisions/2026-05-20-quota-cache-removal.md](../../decisions/2026-05-20-quota-cache-removal.md) for the rationale and the conditions under which a cache could be reintroduced. Keep this file for historical context only — do not implement.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a last-known stdin quota cache so `claude-pace` can reuse the previous 5h/7d snapshot when a later run has `HAS_RL=0`, while preserving current empty-stdin behavior and session-cost fallback semantics.

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.0
+
+- **Breaking:** Remove the last-known quota cache fallback. When stdin `rate_limits` is absent, claude-pace now shows `--` for 5h/7d quota and the session cost when available, instead of reusing a cached snapshot from a previous run. Rationale: stdin carries no provider/account identifier, so the cache could not prove the cached payload belonged to the current session — multi-provider users (e.g. Claude Max + Microsoft Foundry) saw one account's quota leak into the other. Surfacing `--` is an honest failure mode; a wrong-account snapshot is a silent wrong answer. See [docs/decisions/2026-05-20-quota-cache-removal.md](docs/decisions/2026-05-20-quota-cache-removal.md) for the full reasoning and the conditions under which a cache could be reintroduced. Cross-provider contamination reported by @kvdb in https://github.com/Astro-Han/claude-pace/pull/14, which surfaced the underlying identity gap
+- Existing `~/.cache/claude-pace/claude-sl-quota*` files from v0.8.x are now orphans, ignored by claude-pace, and safe to delete manually
+- Drop ~250 lines of code + tests covering quota cache write/read, snapshot validation, symlink and unreadable-file hardening, and expired-reset guards
+
 ## 0.8.6
 
 - Fix Windows Git Bash compatibility: replace `jq --slurpfile` + process substitution with `--argjson`, since `/proc/<pid>/fd/N` is unavailable on Windows and previously caused `MODEL` and `DIR` to render blank (thanks @capraCoder in https://github.com/Astro-Han/claude-pace/pull/13)
