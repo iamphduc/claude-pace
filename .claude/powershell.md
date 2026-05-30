@@ -38,4 +38,4 @@ Same invariants:
 
 ## Tests
 
-`test.ps1` — custom harness, no Pester. 95+ assertions across 28 scenarios mirror `test.sh`. Run: `pwsh -NoProfile -File test.ps1`. Exit = failure count.
+`test.ps1` — custom harness, no Pester. 79+ assertions across 29 scenarios mirror `test.sh`. Run: `pwsh -NoProfile -File test.ps1`. Exit = failure count. `Invoke-Statusline` save/restores `CLAUDE_CODE_AUTO_COMPACT_WINDOW` alongside the cache-root env vars so Test 29 cases don't leak the window into each other (or into baseline tests).

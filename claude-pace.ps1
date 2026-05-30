@@ -44,8 +44,26 @@ $MODEL  = if ($in.model.display_name) { [string]$in.model.display_name } else { 
 $DIR    = if ($in.workspace.project_dir) { [string]$in.workspace.project_dir } else { '.' }
 $PCT    = [int][math]::Floor([double]($in.context_window.used_percentage ?? 0))
 $CTX    = [int]($in.context_window.context_window_size ?? 0)
+$TIN    = [int]($in.context_window.total_input_tokens ?? 0)   # CC 2.1.132+; 0 when absent
 $COST   = [double]($in.cost.total_cost_usd ?? 0)
 $HAS_RL = $null -ne $in.rate_limits
+
+# -- Auto-compact window: track usage against the compaction threshold --
+# When CLAUDE_CODE_AUTO_COMPACT_WINDOW is set, compaction fires at that token
+# count, not the model's full window (since CC 2.1.117 context_window_size is the
+# model's FULL window and used_percentage measures against it). Recompute PCT
+# against the cap and relabel CTX so the bar measures distance-to-compaction,
+# matching the desktop app. Falls back to the full window when the env var is
+# unset/invalid or when token data is missing (early session). See issue #15.
+$ACW = 0
+[void][int]::TryParse($env:CLAUDE_CODE_AUTO_COMPACT_WINDOW, [ref]$ACW)
+if ($ACW -gt 0 -and $TIN -gt 0) {
+    # Compaction cannot exceed the real window; clamp so the label stays honest.
+    if ($CTX -gt 0 -and $ACW -gt $CTX) { $ACW = $CTX }
+    $PCT = [int][math]::Floor($TIN * 100.0 / $ACW)
+    if ($PCT -gt 100) { $PCT = 100 }
+    $CTX = $ACW
+}
 
 $EFF_in  = $in.effort.level
 $EFF_cfg = $cfg.effortLevel
