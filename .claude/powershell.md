@@ -12,6 +12,7 @@ Tuned for Windows terminals (Consolas, OEM codepages):
 - Pace delta `(+51%)` red / `(-6%)` green — paren-wrapped ASCII signs (vs Unicode `⇡⇣` which fail in many Win fonts).
 - Countdown compact `1h32m` / `2d4h` (vs largest unit only).
 - Primary `%` bold (`\e[1m`).
+- Effort word colored to match Claude Code's own Dark-theme effort palette via truecolor (`\e[38;2;R;G;Bm`): low=amber `255,193,7` (warning), medium=green `78,186,101` (success), high=periwinkle `177,185,249` (permission), xhigh=violet `175,135,255` (autoAccept), max=rainbow-red `235,95,87`. CC animates xhigh (shimmer) / max (rainbow); we use a static stand-in. Bash leaves `MODEL EF` all cyan — no per-effort color.
 - Token count `340K` dim next to `%` (= `PCT × CTX / 100`). Buckets: `<1000` → `850`, `<1M` → `<int>K`, `≥1M` → `<int>M`.
 - Labels `5h:` / `7d:` colon.
 - Inter-window dim `|` between 5h/7d → line 2 has **2 pipes**.

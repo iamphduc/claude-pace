@@ -76,14 +76,17 @@ $EF = switch ($EFF) {
     default  { 'medium' }
 }
 # Effort gets its own color so it's distinguishable from the model (cyan).
-# Intensity scale: low=dim → max=bold red.
+# Truecolor (24-bit) values mirror Claude Code's own Dark-theme effort palette:
+# low=warning, medium=success, high=permission, xhigh=autoAccept, max=rainbow.
+# CC animates xhigh (shimmer) and max (rainbow cycle); we use a static stand-in
+# (autoAccept violet / first rainbow color). Needs a truecolor-capable terminal.
 $EF_COLOR = switch ($EF) {
-    'low'    { $D }
-    'medium' { $G }
-    'high'   { $Y }
-    'xhigh'  { $R }
-    'max'    { "$B$R" }
-    default  { $G }
+    'low'    { "$E[38;2;255;193;7m" }   # warning  — amber
+    'medium' { "$E[38;2;78;186;101m" }  # success  — green
+    'high'   { "$E[38;2;177;185;249m" } # permission — periwinkle
+    'xhigh'  { "$E[38;2;175;135;255m" } # autoAccept — violet
+    'max'    { "$E[38;2;235;95;87m" }   # rainbow  — rainbow_red stand-in
+    default  { "$E[38;2;78;186;101m" }  # success  — green
 }
 
 $U5 = '--'; $U7 = '--'; $R5 = 0; $R7 = 0
