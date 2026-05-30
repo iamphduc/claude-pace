@@ -3,6 +3,7 @@
 # Usage: pwsh -NoProfile -File test.ps1
 # Exits non-zero on any failure; exit code = number of failures.
 $ErrorActionPreference = 'Continue'
+Remove-Item -Path Env:CLAUDE_CODE_AUTO_COMPACT_WINDOW -ErrorAction SilentlyContinue
 
 # Force UTF-8 throughout. Without this, capturing the child pwsh's stdout decodes with the
 # system OEM codepage (cp437/cp1252), turning Unicode chars (⇡⇣█░…) into mojibake that
@@ -83,7 +84,7 @@ function Assert-True {
 # Run claude-pace.ps1 with isolated env. Returns ANSI-stripped lines.
 function Invoke-Statusline {
     param([string]$Json, [hashtable]$Env = @{})
-    $keys  = @('HOME', 'USERPROFILE', 'XDG_RUNTIME_DIR', 'LOCALAPPDATA')
+    $keys  = @('HOME', 'USERPROFILE', 'XDG_RUNTIME_DIR', 'LOCALAPPDATA', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW')
     $saved = @{}
     foreach ($k in $keys) { $saved[$k] = (Get-Item -Path "Env:$k" -ErrorAction SilentlyContinue).Value }
     try {
@@ -390,6 +391,24 @@ Write-Host "Test 28: truncation budget fits longest word"
 $script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Sonnet 4.6`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"effort`":{`"level`":`"medium`"},`"rate_limits`":{`"five_hour`":{`"used_percentage`":30,`"resets_at`":$($NOW+12000)},`"seven_day`":{`"used_percentage`":15,`"resets_at`":$($NOW+500000)}}}"
 Assert-Line    "Sonnet 4.6 (200K) medium fits without ellipsis" 1 'Sonnet 4\.6 \(200K\) medium'
 Assert-LineNot "no ellipsis on medium with mid-length model"    1 '\.\.\.'
+
+# -- Test 29: Auto-compact window tracks usage against the compaction threshold --
+# Since CC 2.1.117 context_window_size is the model FULL window (1M) and used_percentage
+# is measured against it. CLAUDE_CODE_AUTO_COMPACT_WINDOW caps the effective context, so
+# the bar must measure distance to that cap instead. (issue #15)
+Write-Host "Test 29: auto-compact window"
+$script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.7 (1M context)`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":6,`"context_window_size`":1000000,`"total_input_tokens`":60000},`"rate_limits`":{`"five_hour`":{`"used_percentage`":30,`"resets_at`":$($NOW+12000)},`"seven_day`":{`"used_percentage`":15,`"resets_at`":$($NOW+500000)}}}" -Env @{ CLAUDE_CODE_AUTO_COMPACT_WINDOW = '400000' }
+Assert-Line    "auto-compact recomputes bar against 400K" 2 '\] 15%'
+Assert-Line    "model line keeps full-window (1M) label"  1 'Opus 4\.7 \(1M\)'
+Assert-Aligned "| aligned with auto-compact relabel"
+$script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.7 (1M context)`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":6,`"context_window_size`":1000000,`"total_input_tokens`":60000},`"rate_limits`":{`"five_hour`":{`"used_percentage`":30,`"resets_at`":$($NOW+12000)},`"seven_day`":{`"used_percentage`":15,`"resets_at`":$($NOW+500000)}}}"
+Assert-Line "no auto-compact env keeps full-window bar" 2 '\] 6%'
+$script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.7 (1M context)`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":6,`"context_window_size`":1000000},`"rate_limits`":{`"five_hour`":{`"used_percentage`":30,`"resets_at`":$($NOW+12000)},`"seven_day`":{`"used_percentage`":15,`"resets_at`":$($NOW+500000)}}}" -Env @{ CLAUDE_CODE_AUTO_COMPACT_WINDOW = '400000' }
+Assert-Line "missing total_input_tokens falls back to full window" 2 '\] 6%'
+$script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.7 (1M context)`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":6,`"context_window_size`":1000000,`"total_input_tokens`":500000},`"rate_limits`":{`"five_hour`":{`"used_percentage`":30,`"resets_at`":$($NOW+12000)},`"seven_day`":{`"used_percentage`":15,`"resets_at`":$($NOW+500000)}}}" -Env @{ CLAUDE_CODE_AUTO_COMPACT_WINDOW = '400000' }
+Assert-Line "over-threshold usage caps at 100%" 2 '\] 100%'
+$script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.7 (1M context)`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":6,`"context_window_size`":1000000,`"total_input_tokens`":60000},`"rate_limits`":{`"five_hour`":{`"used_percentage`":30,`"resets_at`":$($NOW+12000)},`"seven_day`":{`"used_percentage`":15,`"resets_at`":$($NOW+500000)}}}" -Env @{ CLAUDE_CODE_AUTO_COMPACT_WINDOW = '2000000' }
+Assert-Line "compact window clamped to real window" 2 '\] 6%'
 
 # ── Summary ──
 Write-Host ''
