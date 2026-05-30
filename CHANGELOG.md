@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.1
+
+- Track context against `CLAUDE_CODE_AUTO_COMPACT_WINDOW` when set. Since Claude Code 2.1.117 the stdin `context_window.context_window_size` is the model's full window (e.g. 1M for Opus 4.7) and `used_percentage` is measured against it — so on a context capped by `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (e.g. 400K) the bar filled against 1M and looked nearly empty right as auto-compaction was about to fire. When the env var is set and `context_window.total_input_tokens` (CC 2.1.132+) is available, the bar now measures used tokens ÷ the auto-compact window and relabels the size to that window (e.g. `15% 400K`), matching the desktop app's context indicator. Clamped to the real window and capped at 100%; falls back to full-window behavior when the env var is unset or token data is missing (early session). Line 1 keeps the model's full-window label (e.g. `(1M)`) because that reflects the model's capability, not the active budget (https://github.com/Astro-Han/claude-pace/issues/15)
+- Add regression coverage for the recompute, full-window fallback, missing-token fallback, over-threshold cap, and real-window clamp
+
 ## 0.9.0
 
 - **Breaking:** Remove the last-known quota cache fallback. When stdin `rate_limits` is absent, claude-pace now shows `--` for 5h/7d quota and the session cost when available, instead of reusing a cached snapshot from a previous run. Rationale: stdin carries no provider/account identifier, so the cache could not prove the cached payload belonged to the current session — multi-provider users (e.g. Claude Max + Microsoft Foundry) saw one account's quota leak into the other. Surfacing `--` is an honest failure mode; a wrong-account snapshot is a silent wrong answer. See [docs/decisions/2026-05-20-quota-cache-removal.md](docs/decisions/2026-05-20-quota-cache-removal.md) for the full reasoning and the conditions under which a cache could be reintroduced. Cross-provider contamination reported by @kvdb in https://github.com/Astro-Han/claude-pace/pull/14, which surfaced the underlying identity gap

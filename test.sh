@@ -96,6 +96,9 @@ assert_line_count() {
 }
 
 NOW=$(date +%s)
+# Auto-compact tracking keys off this env var; clear it so the host shell's
+# value can't leak into the baseline tests (Test 29 sets it explicitly).
+unset CLAUDE_CODE_AUTO_COMPACT_WINDOW
 REPO_NAME=$(basename "$PWD")
 CURRENT_BRANCH=$(git branch --show-current)
 run() { echo "$1" | bash claude-pace.sh 2>/dev/null | strip_ansi; }
@@ -450,6 +453,45 @@ echo "Test 28: truncation budget fits longest word"
 OUTPUT=$(run '{"model":{"display_name":"Sonnet 4.6"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"effort":{"level":"medium"},"rate_limits":{"five_hour":{"used_percentage":30,"resets_at":'$((NOW + 12000))'},"seven_day":{"used_percentage":15,"resets_at":'$((NOW + 500000))'}}}')
 assert_line "Sonnet 4.6 (200K) medium fits without ellipsis" 1 'Sonnet 4\.6 \(200K\) medium'
 assert_line_not "no ellipsis on medium with mid-length model" 1 '…'
+
+# ── Test 29: Auto-compact window tracks usage against the compaction threshold ──
+# Since CC 2.1.117 the stdin context_window_size is the model's FULL window (1M),
+# so used_percentage measures against it. When CLAUDE_CODE_AUTO_COMPACT_WINDOW caps
+# the effective context, the bar must measure distance to that cap instead. (issue #15)
+echo "Test 29: auto-compact window"
+ACW_HOME="$TEST_TMP/acw-home"
+ACW_RUNTIME="$TEST_TMP/acw-runtime"
+mkdir -p "$ACW_HOME" "$ACW_RUNTIME"
+run_acw() { # $1=auto-compact window, $2=input
+  env HOME="$ACW_HOME" XDG_RUNTIME_DIR="$ACW_RUNTIME" USER=tester PATH="$PATH" \
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW="$1" bash claude-pace.sh 2>/dev/null <<<"$2" | strip_ansi
+}
+acw_input() { # $1 = ',"total_input_tokens":N' fragment (or '' to omit)
+  printf '{"model":{"display_name":"Opus 4.7 (1M context)"},"workspace":{"project_dir":"%s"},"context_window":{"used_percentage":6,"context_window_size":1000000%s},"rate_limits":{"five_hour":{"used_percentage":30,"resets_at":%d},"seven_day":{"used_percentage":15,"resets_at":%d}}}' \
+    "$PWD" "$1" "$((NOW + 12000))" "$((NOW + 500000))"
+}
+
+# (a) env set + token data → bar measured against 400K and relabeled
+OUTPUT=$(run_acw 400000 "$(acw_input ',"total_input_tokens":61829')")
+assert_line "auto-compact recomputes bar against 400K" 2 '15% 400K'
+assert_line "model line keeps full-window (1M) label" 1 'Opus 4\.7 \(1M\)'
+assert_aligned "| aligned with auto-compact relabel"
+
+# (b) env unset → full-window behavior unchanged
+OUTPUT=$(run_with_env "$ACW_HOME" "$ACW_RUNTIME" "$(acw_input ',"total_input_tokens":61829')")
+assert_line "no auto-compact env keeps full-window bar" 2 '6% 1M'
+
+# (c) token data missing → fall back to full window even with env set
+OUTPUT=$(run_acw 400000 "$(acw_input '')")
+assert_line "missing total_input_tokens falls back to full window" 2 '6% 1M'
+
+# (d) usage over the threshold caps at 100%
+OUTPUT=$(run_acw 400000 "$(acw_input ',"total_input_tokens":500000')")
+assert_line "over-threshold usage caps at 100%" 2 '100% 400K'
+
+# (e) compact window larger than the real window clamps to the real window
+OUTPUT=$(run_acw 2000000 "$(acw_input ',"total_input_tokens":61829')")
+assert_line "compact window clamped to real window" 2 '6% 1M'
 
 # ── Summary ──
 echo ""
