@@ -405,10 +405,48 @@ $script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"
 Assert-Line "no auto-compact env keeps full-window bar" 2 '\] 6%'
 $script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.7 (1M context)`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":6,`"context_window_size`":1000000},`"rate_limits`":{`"five_hour`":{`"used_percentage`":30,`"resets_at`":$($NOW+12000)},`"seven_day`":{`"used_percentage`":15,`"resets_at`":$($NOW+500000)}}}" -Env @{ CLAUDE_CODE_AUTO_COMPACT_WINDOW = '400000' }
 Assert-Line "missing total_input_tokens falls back to full window" 2 '\] 6%'
+# Old CC omits the field entirely → -1 sentinel → full-window fallback. It must
+# never collapse to a present 0 and relabel the bar to the compact window.
+Assert-LineNot "missing total_input_tokens never relabels to compact window" 2 '\] 0%'
 $script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.7 (1M context)`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":6,`"context_window_size`":1000000,`"total_input_tokens`":500000},`"rate_limits`":{`"five_hour`":{`"used_percentage`":30,`"resets_at`":$($NOW+12000)},`"seven_day`":{`"used_percentage`":15,`"resets_at`":$($NOW+500000)}}}" -Env @{ CLAUDE_CODE_AUTO_COMPACT_WINDOW = '400000' }
 Assert-Line "over-threshold usage caps at 100%" 2 '\] 100%'
 $script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.7 (1M context)`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":6,`"context_window_size`":1000000,`"total_input_tokens`":60000},`"rate_limits`":{`"five_hour`":{`"used_percentage`":30,`"resets_at`":$($NOW+12000)},`"seven_day`":{`"used_percentage`":15,`"resets_at`":$($NOW+500000)}}}" -Env @{ CLAUDE_CODE_AUTO_COMPACT_WINDOW = '2000000' }
 Assert-Line "compact window clamped to real window" 2 '\] 6%'
+# Present-but-zero total_input_tokens (fresh-session first frame: CC sends the key
+# with value 0, distinct from old CC omitting it) → measure against the cap from
+# the start instead of flashing the full window. (issue #15 follow-up)
+$script:CurrentOutput = Invoke-Statusline -Json "{`"model`":{`"display_name`":`"Opus 4.7 (1M context)`"},`"workspace`":{`"project_dir`":`"$RDIR`"},`"context_window`":{`"used_percentage`":6,`"context_window_size`":1000000,`"total_input_tokens`":0},`"rate_limits`":{`"five_hour`":{`"used_percentage`":30,`"resets_at`":$($NOW+12000)},`"seven_day`":{`"used_percentage`":15,`"resets_at`":$($NOW+500000)}}}" -Env @{ CLAUDE_CODE_AUTO_COMPACT_WINDOW = '400000' }
+Assert-Line "zero total_input_tokens still measures against compact window" 2 '\] 0%'
+Assert-Line "zero-token first frame keeps full-window (1M) model label" 1 'Opus 4\.7 \(1M\)'
+
+# ── Test 30: cache writes leave no temp files behind ──
+# Through the fork's Move-Item era, records went through a claude-sl-tmp-* GUID
+# file + Move-Item for atomicity. Claude Code cancels the status line script
+# whenever a refresh arrives mid-run, so any cancellation between the write and
+# the move stranded a uniquely named temp file permanently. Writes go straight to
+# the final path now, so the cache root must only ever hold claude-sl-git-*
+# records. (synced from upstream 0.9.3)
+Write-Host "Test 30: cache writes leave no temp files"
+$TMPF_HOME    = Join-Path $script:TestTmp 'tmpfile-home'
+$TMPF_RUNTIME = Join-Path $script:TestTmp 'tmpfile-runtime'
+$TMPF_REPO    = Join-Path $script:TestTmp 'tmpfile-repo'
+$TMPF_ROOT    = Join-Path $TMPF_RUNTIME 'claude-pace'
+$null = New-Item -ItemType Directory -Path $TMPF_HOME, $TMPF_RUNTIME -Force
+Init-TestRepo $TMPF_REPO
+$TMPF_DIR_NORM = Norm $TMPF_REPO
+$TMPF_JSON = "{`"model`":{`"display_name`":`"Opus 4.6`"},`"workspace`":{`"project_dir`":`"$TMPF_DIR_NORM`"},`"context_window`":{`"used_percentage`":20,`"context_window_size`":200000},`"rate_limits`":{`"five_hour`":{`"used_percentage`":30,`"resets_at`":$($NOW+12000)},`"seven_day`":{`"used_percentage`":15,`"resets_at`":$($NOW+500000)}}}"
+$TMPF_RECORD = Get-GitCachePath $TMPF_ROOT $TMPF_DIR_NORM
+foreach ($_i in 1..3) {
+    Invoke-SideEffect -Json $TMPF_JSON -Env @{ HOME = $TMPF_HOME; USERPROFILE = $TMPF_HOME; XDG_RUNTIME_DIR = $TMPF_RUNTIME }
+    # Back-date the record so the next run takes the write path again rather than
+    # the 5s cache hit, which would make the leftover check vacuous.
+    if (Test-Path -LiteralPath $TMPF_RECORD) { (Get-Item -LiteralPath $TMPF_RECORD).LastWriteTimeUtc = [DateTime]::new(2000, 1, 1) }
+}
+# Non-vacuous guard: caching must actually have been enabled, or an empty
+# directory would pass the leftover check silently.
+Assert-True "cache record is written to its final path" (Test-Path -LiteralPath $TMPF_RECORD -PathType Leaf)
+$TMPF_LEFTOVERS = @(Get-ChildItem -LiteralPath $TMPF_ROOT -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike 'claude-sl-git-*' })
+Assert-True "repeated writes leave no temp files in the cache root" ($TMPF_LEFTOVERS.Count -eq 0)
 
 # ── Summary ──
 Write-Host ''

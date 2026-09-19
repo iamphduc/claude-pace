@@ -44,7 +44,12 @@ $MODEL  = if ($in.model.display_name) { [string]$in.model.display_name } else { 
 $DIR    = if ($in.workspace.project_dir) { [string]$in.workspace.project_dir } else { '.' }
 $PCT    = [int][math]::Floor([double]($in.context_window.used_percentage ?? 0))
 $CTX    = [int]($in.context_window.context_window_size ?? 0)
-$TIN    = [int]($in.context_window.total_input_tokens ?? 0)   # CC 2.1.132+; 0 when absent
+$tinRaw = $in.context_window.total_input_tokens
+# CC 2.1.132+ sends total_input_tokens (0 on a fresh session's first frame).
+# Mirror the bash jq: a real number (incl. 0) is kept; anything else — old CC
+# omitting the field entirely — becomes a -1 sentinel so a present 0 stays
+# distinct from an absent field. The auto-compact gate below relies on that.
+$TIN = if ($tinRaw -is [int] -or $tinRaw -is [long] -or $tinRaw -is [double]) { [int][math]::Floor([double]$tinRaw) } else { -1 }
 $COST   = [double]($in.cost.total_cost_usd ?? 0)
 $HAS_RL = $null -ne $in.rate_limits
 
@@ -53,11 +58,13 @@ $HAS_RL = $null -ne $in.rate_limits
 # count, not the model's full window (since CC 2.1.117 context_window_size is the
 # model's FULL window and used_percentage measures against it). Recompute PCT
 # against the cap and relabel CTX so the bar measures distance-to-compaction,
-# matching the desktop app. Falls back to the full window when the env var is
-# unset/invalid or when token data is missing (early session). See issue #15.
+# matching the desktop app. A present 0 (fresh-session first frame, before the
+# first API response) passes so the bar measures against the cap from the start
+# instead of flashing the full window; only the -1 sentinel (old CC omitting the
+# field) falls back to the full window. See issue #15.
 $ACW = 0
 [void][int]::TryParse($env:CLAUDE_CODE_AUTO_COMPACT_WINDOW, [ref]$ACW)
-if ($ACW -gt 0 -and $TIN -gt 0) {
+if ($ACW -gt 0 -and $TIN -ge 0) {
     # Compaction cannot exceed the real window; clamp so the label stays honest.
     if ($CTX -gt 0 -and $ACW -gt $CTX) { $ACW = $CTX }
     $PCT = [int][math]::Floor($TIN * 100.0 / $ACW)
@@ -162,16 +169,24 @@ function Read-CacheRecord {
 
 function Save-CacheRecord {
     param([string]$path, [object[]]$fields)
-    $dir = Split-Path -Parent $path
-    $tmp = Join-Path $dir ("claude-sl-tmp-$([guid]::NewGuid().ToString('N').Substring(0,8))")
+    # Write straight to the final path — no temp file. Claude Code cancels the
+    # status line script whenever a refresh arrives mid-run, so the old
+    # temp-file + Move-Item scheme stranded a uniquely named orphan on every
+    # cancellation between the write and the move (one reporter had 3008).
+    # Atomicity was never needed here: the record is one short line of git data
+    # with a 5s TTL, so a torn write is just a cache miss that the reader
+    # already sanitizes and the next run recomputes. A reparse point must be
+    # refused explicitly — WriteAllText follows a symlink to its target, just as
+    # the bash `>` does, where Move-Item -Force used to replace the link itself.
     try {
+        if (Test-Path -LiteralPath $path) {
+            $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $false }
+        }
         $payload = (($fields | ForEach-Object { [string]$_ }) -join $SEP) + "`n"
-        [IO.File]::WriteAllText($tmp, $payload)
-        # Move-Item -Force replaces an existing target wholesale (incl. symlink), atomic on NTFS.
-        Move-Item -LiteralPath $tmp -Destination $path -Force -ErrorAction Stop
+        [IO.File]::WriteAllText($path, $payload)
         return $true
     } catch {
-        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
         return $false
     }
 }
@@ -195,7 +210,7 @@ function Get-MinutesUntil {
     return $m
 }
 
-# ── Git metadata (with 5s cache, atomic write) ──
+# ── Git metadata (with 5s disposable cache) ──
 function Read-GitInfo {
     param([string]$dir)
     $r = [pscustomobject]@{ Branch = ''; FileCount = 0; Adds = 0; Dels = 0; Ok = $false }
