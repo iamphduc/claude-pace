@@ -199,7 +199,7 @@ Opus 4.7 (1M) xhigh    |  claude-pace (main) 4f +937 -0
 
 ### Tests
 
-`test.ps1` is a custom regression harness (no Pester dep) — 95+ assertions across 28 scenarios mirroring `test.sh`. Run:
+`test.ps1` is a custom regression harness (no Pester dep) — 80+ assertions across 29 scenarios mirroring `test.sh`. Run:
 
 ```powershell
 pwsh -NoProfile -File test.ps1
