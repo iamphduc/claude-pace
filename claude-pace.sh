@@ -52,18 +52,21 @@ _load_cache_record_file() {
   IFS= read -r line <"$path" || line=""
   _read_cache_record "$line"
 }
-# Writes one cache record atomically. If mktemp fails, the caller skips the
-# cache update and keeps serving live data for this run.
+# Writes one cache record straight to its final path. This used to go through a
+# mktemp file and an mv for atomicity, but Claude Code cancels the status line
+# script whenever a refresh arrives mid-run, so every cancellation between the
+# write and the mv stranded a uniquely named temp file forever — one reporter had
+# 3008 of them. Atomicity was never needed here: the record is one short line of
+# git data with a 5s TTL, so a torn write is just a cache miss that the reader
+# already sanitizes and the next run recomputes. Dropping the temp file also drops
+# two subprocess spawns per refresh and shrinks the cancellable window to a single
+# builtin. Symlinks must be refused explicitly: mv used to replace the link
+# itself, while > follows it.
 _write_cache_record() {
-  local path="$1" tmp dir
+  local path="$1" IFS="$SEP"
   shift
-  dir=${path%/*}
-  tmp=$(mktemp "${dir}/claude-sl-tmp-XXXXXX" 2>/dev/null || true)
-  [ -n "$tmp" ] || return 1
-  (
-    IFS="$SEP"
-    printf '%s\n' "$*"
-  ) >"$tmp" && mv "$tmp" "$path"
+  [ ! -L "$path" ] || return 1
+  printf '%s\n' "$*" >"$path" 2>/dev/null
 }
 # Computes remaining whole minutes until a future epoch. Missing or expired
 # timestamps return an empty string so callers can skip countdown formatting.
@@ -123,7 +126,7 @@ IFS=$'\t' read -r MODEL DIR PCT CTX COST EFF HAS_RL U5 U7 R5 R7 TIN < <(
     (.rate_limits.seven_day.used_percentage//null|if type=="number" then floor else "--" end),
     (.rate_limits.five_hour.resets_at//0),
     (.rate_limits.seven_day.resets_at//0),
-    (.context_window.total_input_tokens//0|floor)]|@tsv' <<<"$input"
+    (if (.context_window.total_input_tokens|type)=="number" then (.context_window.total_input_tokens|floor) else -1 end)]|@tsv' <<<"$input"
 )
 case "${EFF:-default}" in low) EF='low' ;; high) EF='high' ;; xhigh) EF='xhigh' ;; max) EF='max' ;; *) EF='medium' ;; esac
 
@@ -131,10 +134,13 @@ case "${EFF:-default}" in low) EF='low' ;; high) EF='high' ;; xhigh) EF='xhigh' 
 # When CLAUDE_CODE_AUTO_COMPACT_WINDOW is set, compaction fires at that token
 # count, not the model's full window. Recompute PCT against it and relabel CTX
 # so the bar measures "distance to compaction", matching the desktop app's bar
-# (e.g. 49.8k / 400.0k). Falls back to the full window when unset or when token
-# data is missing (early session, before the first API response).
+# (e.g. 49.8k / 400.0k). The jq above emits TIN=-1 only when CC omits
+# total_input_tokens entirely (old CC); the ^[0-9]+$ test rejects that and falls
+# back to the full window. A present zero (fresh-session first frame, before the
+# first API response) passes, so the bar measures against the cap from the start
+# instead of flashing the full window while the env var is set.
 ACW="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-0}"
-if [[ "$ACW" =~ ^[0-9]+$ ]] && ((ACW > 0)) && [[ "$TIN" =~ ^[0-9]+$ ]] && ((TIN > 0)); then
+if [[ "$ACW" =~ ^[0-9]+$ ]] && ((ACW > 0)) && [[ "$TIN" =~ ^[0-9]+$ ]]; then
   # Compaction can't exceed the real window; clamp so the label stays honest.
   ((CTX > 0 && ACW > CTX)) && ACW=$CTX
   PCT=$((TIN * 100 / ACW))
@@ -166,9 +172,10 @@ BAR=""
 for ((i = 0; i < F; i++)); do BAR+='█'; done
 for ((i = F; i < 10; i++)); do BAR+='░'; done
 
-# ── Git Info (5s cache, atomic write) ──
+# ── Git Info (5s disposable cache) ──
 # Cache key encodes DIR so concurrent sessions in different repos don't clash.
-# Atomic write: write to a temp file first, then mv to avoid partial reads.
+# Records are disposable: anything unreadable or torn falls through to the
+# sanitizing guards below and is recomputed on the next run.
 BR="" FC=0 AD=0 DL=0
 if [[ "$CACHE_OK" == "1" ]]; then
   GC="${_CD}/claude-sl-git-$(printf '%s' "$DIR" | { shasum 2>/dev/null || sha1sum; } | cut -c1-16)"
