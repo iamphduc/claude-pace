@@ -1,0 +1,14 @@
+# Normalize line endings so the shipped scripts are correct on every platform,
+# regardless of a contributor's core.autocrlf setting.
+* text=auto
+
+# Bash script + POSIX test harness must be LF — a CRLF breaks the shebang on
+# Linux/macOS (`bad interpreter: /usr/bin/env bash^M`).
+*.sh text eol=lf
+
+# PowerShell 7+ is LF-clean on all platforms; keep it LF for consistent diffs.
+*.ps1 text eol=lf
+
+# Docs and data stay LF too.
+*.md   text eol=lf
+*.json text eol=lf
