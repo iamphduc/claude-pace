@@ -128,6 +128,7 @@ IFS=$'\t' read -r MODEL DIR PCT CTX COST EFF HAS_RL U5 U7 R5 R7 TIN < <(
     (.rate_limits.seven_day.resets_at//0),
     (if (.context_window.total_input_tokens|type)=="number" then (.context_window.total_input_tokens|floor) else -1 end)]|@tsv' <<<"$input"
 )
+TIN=${TIN%$'\r'} # Windows jq ends lines with CRLF; the last field keeps the \r
 case "${EFF:-default}" in low) EF='low' ;; high) EF='high' ;; xhigh) EF='xhigh' ;; max) EF='max' ;; *) EF='medium' ;; esac
 
 # ── Auto-compact window: track usage against the compaction threshold ──
