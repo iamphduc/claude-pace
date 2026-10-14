@@ -132,6 +132,8 @@ init_test_repo() {
   git -C "$repo_dir" init -b main >/dev/null 2>&1
   git -C "$repo_dir" config user.name tester
   git -C "$repo_dir" config user.email tester@example.com
+  # A global commit.gpgsign=true would block on a passphrase prompt
+  git -C "$repo_dir" config commit.gpgsign false
   printf 'ok\n' >"$repo_dir/readme.txt"
   git -C "$repo_dir" add readme.txt
   git -C "$repo_dir" commit -m init >/dev/null 2>&1
@@ -261,7 +263,10 @@ PIPE_RUNTIME="$TEST_TMP/pipe-runtime"
 PIPE_REPO="$TEST_TMP/pipe-repo"
 mkdir -p "$PIPE_HOME" "$PIPE_RUNTIME"
 init_test_repo "$PIPE_REPO"
-git -C "$PIPE_REPO" checkout -b 'feat|pipe' >/dev/null 2>&1
+if ! git -C "$PIPE_REPO" checkout -b 'feat|pipe' >/dev/null 2>&1; then
+  # Windows filesystems reject | in file names, so the ref can't be created
+  echo "  SKIP: filesystem does not allow | in branch names"
+else
 OUTPUT=$(run_with_env "$PIPE_HOME" "$PIPE_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$PIPE_REPO"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"rate_limits":{"five_hour":{"used_percentage":30,"resets_at":'"$((NOW + 12000))"'},"seven_day":{"used_percentage":15,"resets_at":'"$((NOW + 500000))"'}}}')
 if [[ "$OUTPUT" =~ \(feat\|pipe\) ]]; then
   PASS=$((PASS + 1))
@@ -270,6 +275,7 @@ else
   FAIL=$((FAIL + 1))
   echo "  FAIL: cache preserves branch names containing pipes"
   echo "    actual line: $(printf '%s\n' "$OUTPUT" | sed -n '1p')"
+fi
 fi
 
 # ── Test 16: Git fallback write must not follow symlinks ──
@@ -281,9 +287,13 @@ SYMLINK_CACHE_ROOT="$SYMLINK_RUNTIME/claude-pace"
 SYMLINK_TARGET="$TEST_TMP/git-fallback-target"
 mkdir -p "$SYMLINK_HOME" "$SYMLINK_RUNTIME" "$SYMLINK_PROJECT" "$SYMLINK_CACHE_ROOT"
 GC="$SYMLINK_CACHE_ROOT/claude-sl-git-$(_hash_dir "$SYMLINK_PROJECT")"
-ln -s "$SYMLINK_TARGET" "$GC"
+if ! ln -s "$SYMLINK_TARGET" "$GC" 2>/dev/null || [[ ! -L "$GC" ]]; then
+  # Git Bash on Windows can't create a symlink to a missing target
+  echo "  SKIP: cannot create dangling symlinks here"
+else
 run_side_effect_with_env "$SYMLINK_HOME" "$SYMLINK_RUNTIME" '{"model":{"display_name":"Opus 4.6"},"workspace":{"project_dir":"'"$SYMLINK_PROJECT"'"},"context_window":{"used_percentage":20,"context_window_size":200000},"rate_limits":{"five_hour":{"used_percentage":30,"resets_at":'"$((NOW + 12000))"'},"seven_day":{"used_percentage":15,"resets_at":'"$((NOW + 500000))"'}}}'
 assert_missing_path "git fallback leaves symlink target untouched" "$SYMLINK_TARGET"
+fi
 
 # ── Test 17: Hash cache key prevents old-style path collisions ──
 echo "Test 17: hash cache key collision resistance"
@@ -571,6 +581,13 @@ else
   echo "  FAIL: cache write spawns no mktemp/mv"
   echo "    spawned: $TMPF_SPAWNS"
 fi
+
+# ── Test 31: Windows backslash paths ──
+echo "Test 31: windows paths"
+OUTPUT=$(jq -n --arg d 'C:\Users\alice\projects\my-app' '{model:{display_name:"Opus"},workspace:{project_dir:$d}}' | bash claude-pace.sh 2>/dev/null | strip_ansi)
+assert_line "windows path shows project name" 1 '\| +my-app$'
+OUTPUT=$(jq -n --arg d 'C:\Users\alice\projects\my-app\.claude\worktrees\fix-auth' '{model:{display_name:"Opus"},workspace:{project_dir:$d}}' | bash claude-pace.sh 2>/dev/null | strip_ansi)
+assert_line "windows worktree shows repo/worktree" 1 '\| +my-app/fix-auth$'
 
 # ── Summary ──
 echo ""

@@ -117,7 +117,7 @@ _SETTINGS=$(cat "$HOME/.claude/settings.json" 2>/dev/null)
 echo "$_SETTINGS" | jq -e . >/dev/null 2>&1 || _SETTINGS='{}'
 IFS=$'\t' read -r MODEL DIR PCT CTX COST EFF HAS_RL U5 U7 R5 R7 TIN < <(
   jq -r --argjson cfg "$_SETTINGS" \
-    '[(.model.display_name//"?"),(.workspace.project_dir//"."),
+    '[(.model.display_name//"?"),(.workspace.project_dir//"."|gsub("\\\\";"/")),
     (.context_window.used_percentage//0|floor),(.context_window.context_window_size//0),
     (.cost.total_cost_usd//0),
     (.effort.level//$cfg.effortLevel//"default"),
@@ -128,6 +128,7 @@ IFS=$'\t' read -r MODEL DIR PCT CTX COST EFF HAS_RL U5 U7 R5 R7 TIN < <(
     (.rate_limits.seven_day.resets_at//0),
     (if (.context_window.total_input_tokens|type)=="number" then (.context_window.total_input_tokens|floor) else -1 end)]|@tsv' <<<"$input"
 )
+TIN=${TIN%$'\r'} # Windows jq ends lines with CRLF; the last field keeps the \r
 case "${EFF:-default}" in low) EF='low' ;; high) EF='high' ;; xhigh) EF='xhigh' ;; max) EF='max' ;; *) EF='medium' ;; esac
 
 # ── Auto-compact window: track usage against the compaction threshold ──
