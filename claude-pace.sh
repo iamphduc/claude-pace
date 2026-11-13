@@ -2,7 +2,7 @@
 # Claude Code statusline plugin
 # Line1: model (ctx) effort | project (branch) Nf +A -D
 # Line2: bar PCT% CL | 5h used% [⇡⇣pace] countdown  7d used% [⇡⇣pace] countdown
-# --compact: model effort | PCT% | project (branch) | 5h used% [pace] | 7d used% [pace]
+# --compact: model effort · PCT% | project (branch) | 5h used% [pace] · 7d used% [pace]
 
 # Disable glob expansion so unquoted vars with wildcards (e.g. DIR paths)
 # are never accidentally expanded into filename lists.
@@ -287,10 +287,11 @@ fi
 
 # ── Compact: one line, no bar, no countdowns, no git stats ──
 if [[ "$COMPACT" == "1" ]]; then
-  _P=" ${D}|${N} "
-  L="${C}${MODEL_C} ${EF}${N}${_P}${BC}${PCT}%${N}${_P}${PROJ}"
-  L+="${_P}5h $(_usage "$U5" "$RM5" 300 nocd)${_P}7d $(_usage "$U7" "$RM7" 10080 nocd)"
-  [ -n "$_CS" ] && L+="${_P}${_CS}"
+  # | splits the 3 sections (model, project, quota); · splits items inside one.
+  _P=" ${D}|${N} " _S=" ${D}·${N} "
+  L="${C}${MODEL_C} ${EF}${N}${_S}${BC}${PCT}%${N}${_P}${PROJ}"
+  L+="${_P}5h $(_usage "$U5" "$RM5" 300 nocd)${_S}7d $(_usage "$U7" "$RM7" 10080 nocd)"
+  [ -n "$_CS" ] && L+="${_S}${_CS}"
   printf '%s\n' "$L"
   exit 0
 fi
