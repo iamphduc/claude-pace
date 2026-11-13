@@ -7,7 +7,7 @@ Hot path, ~300ms tick. Top-to-bottom pipeline:
 3. Resolve private cache: `$XDG_RUNTIME_DIR/claude-pace` or `~/.cache/claude-pace`. Mode 700, owned, not symlink. None safe → caching off. Never `/tmp`.
 4. Git via cache (5s TTL, atomic write). Reject corrupted records before arithmetic.
 5. Quota snapshot cache (`claude-sl-quota`).
-6. Format two lines, symmetric `|` align, emit.
+6. Format two lines, symmetric `|` align, emit. `--compact` → one line, no align, exits before the two-line path.
 
 ## Quota cache fallback (only stateful piece)
 

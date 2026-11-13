@@ -215,6 +215,28 @@ Exit code = number of failures.
 - Does not pipe through `jq` — uses `ConvertFrom-Json` instead.
 - The bash project's plugin / npm / curl install paths still install the bash version. Wiring the PS port today is manual (point `statusLine.command` at the `.ps1`).
 
+## Fork additions: compact one-line mode (bash)
+
+Add `--compact` to the status line command to print one line instead of two:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "~/.claude/statusline.sh --compact"
+  }
+}
+```
+
+```
+Opus 5.5 high | 34% | claude-pace (main) | 5h 42% ⇣18% | 7d 18% ⇣32%
+```
+
+Compact mode keeps the model, effort, context percentage, project, branch, and quota with pace delta. It drops the progress bar, the context size label, git diff stats, and reset countdowns. Without quota data, it shows `--` placeholders and the session cost.
+
+- `npx claude-pace` and `/claude-pace:setup` rewrite the command without the flag. Add `--compact` again after you run either one.
+- The PowerShell port does not support `--compact` yet.
+
 ## License
 
 MIT
