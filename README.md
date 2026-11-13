@@ -219,4 +219,4 @@ Exit code = number of failures.
 
 MIT
 
-*Last updated: 2026-09-25 · v0.9.5*
+*Last updated: 2026-11-10 · v0.9.6*
