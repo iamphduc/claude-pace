@@ -2,10 +2,13 @@
 # Claude Code statusline plugin
 # Line1: model (ctx) effort | project (branch) Nf +A -D
 # Line2: bar PCT% CL | 5h used% [⇡⇣pace] countdown  7d used% [⇡⇣pace] countdown
+# --compact: model effort · PCT% | project (branch) | 5h used% [pace] · 7d used% [pace]
 
 # Disable glob expansion so unquoted vars with wildcards (e.g. DIR paths)
 # are never accidentally expanded into filename lists.
 set -f
+COMPACT=0
+[[ "${1:-}" == "--compact" ]] && COMPACT=1
 input=$(cat)
 [ -z "$input" ] && {
   echo "Claude"
@@ -163,6 +166,9 @@ else CL=""; fi
 
 # ── MODEL_SHORT: strip redundant context label ──
 MODEL=${MODEL/ context)/)}
+# Compact mode drops the context label; cap it like the full line.
+MODEL_C="${MODEL%% (*}"
+((${#MODEL_C} + 1 + ${#EF} > 28)) && MODEL_C="${MODEL_C:0:$((28 - 2 - ${#EF}))}…"
 [[ "$CTX" -gt 0 && "$MODEL" != *"("* ]] && MODEL="${MODEL} (${CL})"
 # Cap "MODEL EF" at 28 chars; 28 fits the longest effort word ('medium', 6 chars)
 # plus a typical "Sonnet 4.6 (200K)" without ellipsis.
@@ -182,7 +188,7 @@ for ((i = F; i < 10; i++)); do BAR+='░'; done
 # Cache key encodes DIR so concurrent sessions in different repos don't clash.
 # Records are disposable: anything unreadable or torn falls through to the
 # sanitizing guards below and is recomputed on the next run.
-BR="" FC=0 AD=0 DL=0
+BR="" FC=0 AD=0 DL=0 PROJ=""
 if [[ "$CACHE_OK" == "1" ]]; then
   GC="${_CD}/claude-sl-git-$(printf '%s' "$DIR" | { shasum 2>/dev/null || sha1sum; } | cut -c1-16)"
   if _stale "$GC" 5; then
@@ -217,17 +223,19 @@ if [[ "${DIR/#$HOME/\~}" =~ /([^/]+)/\.claude/worktrees/([^/]+) ]]; then
 fi
 ((${#PN} > 25)) && PN="${PN:0:25}…"
 
-# Format: project (branch) [git stats]
+# Format: project (branch) [git stats]. PROJ omits the stats for compact mode.
 L1R="$PN"
 if [ -n "$BR" ]; then
   ((${#BR} > 35)) && BR="${BR:0:35}…"
   L1R+=" (${BR})"
+  PROJ="$L1R"
   ((FC > 0)) 2>/dev/null && L1R+=" ${FC}f ${G}+${AD}${N} ${R}-${DL}${N}"
 elif [[ "$IS_WT" == "1" ]]; then
   # Detached HEAD in worktree: show repo/worktree to preserve identity
   L1R="${_REPO}/${_WT_NAME}"
   ((${#L1R} > 25)) && L1R="${L1R:0:25}…"
 fi
+PROJ="${PROJ:-$L1R}"
 
 # Usage data: read stdin rate_limits when available. When absent we show
 # placeholders and the session cost instead of falling back to a possibly stale
@@ -244,8 +252,9 @@ else
 fi
 
 # Combined usage formatter: used% [pace delta] (countdown)
+# A 4th argument (any value) omits the countdown, for compact mode.
 _usage() {
-  local u="${1:---}" rm="$2" w="$3"
+  local u="${1:---}" rm="$2" w="$3" nocd="${4:-}"
   if [[ ! "$u" =~ ^[0-9]+$ ]]; then
     printf "%s" "$u"
   else
@@ -257,7 +266,7 @@ _usage() {
       ((d < 0)) && printf " ${G}⇣%d%%${N}" "${d#-}"
     fi
   fi
-  [[ "$rm" =~ ^[0-9]+$ ]] || return
+  [[ -z "$nocd" && "$rm" =~ ^[0-9]+$ ]] || return
   ((rm >= 1440)) && {
     printf " ${D}%dd${N}" $((rm / 1440))
     return
@@ -268,6 +277,24 @@ _usage() {
   }
   printf " ${D}%dm${N}" "$rm"
 }
+
+# Session cost: only when usage data is unavailable in stdin.
+_CS=""
+if [[ "$SHOW_COST" == "1" ]]; then
+  printf -v _CS "\$%.2f" "$COST" 2>/dev/null
+  [[ "$_CS" == "\$0.00" ]] && _CS=""
+fi
+
+# ── Compact: one line, no bar, no countdowns, no git stats ──
+if [[ "$COMPACT" == "1" ]]; then
+  # | splits the 3 sections (model, project, quota); · splits items inside one.
+  _P=" ${D}|${N} " _S=" ${D}·${N} "
+  L="${C}${MODEL_C} ${EF}${N}${_S}${BC}${PCT}%${N}${_P}${PROJ}"
+  L+="${_P}5h $(_usage "$U5" "$RM5" 300 nocd)${_S}7d $(_usage "$U7" "$RM7" 10080 nocd)"
+  [ -n "$_CS" ] && L+="${_S}${_CS}"
+  printf '%s\n' "$L"
+  exit 0
+fi
 
 # ── Output Assembly (symmetric single-pipe alignment) ──
 
@@ -288,11 +315,7 @@ L1="${C}${MODEL} ${EF}${N}${PAD1} ${D}|${N}  ${L1R}"
 
 # Line 2: bar pct% CL | 5h used% ...  7d used% ...
 L2="${BC}${BAR}${N} ${PCT}% ${CL}${PAD2} ${D}|${N}  5h $(_usage "$U5" "$RM5" 300)  7d $(_usage "$U7" "$RM7" 10080)"
-# Session cost: only when usage data is unavailable in stdin.
-if [[ "$SHOW_COST" == "1" ]]; then
-  printf -v _CS "\$%.2f" "$COST" 2>/dev/null
-  [[ "$_CS" != "\$0.00" ]] && L2+="  $_CS"
-fi
+[ -n "$_CS" ] && L2+="  $_CS"
 
 printf '%s\n' "$L1"
 printf '%s\n' "$L2"

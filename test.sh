@@ -610,6 +610,22 @@ assert_line "windows path shows project name" 1 '\| +my-app$'
 OUTPUT=$(jq -n --arg d 'C:\Users\alice\projects\my-app\.claude\worktrees\fix-auth' '{model:{display_name:"Opus"},workspace:{project_dir:$d}}' | bash claude-pace.sh 2>/dev/null | strip_ansi)
 assert_line "windows worktree shows repo/worktree" 1 '\| +my-app/fix-auth$'
 
+# ── Test 32: --compact prints one line ──
+echo "Test 32: compact mode"
+run_compact() { echo "$1" | bash claude-pace.sh --compact 2>/dev/null | strip_ansi; }
+OUTPUT=$(run_compact '{"model":{"display_name":"Opus 4.6 (1M context)"},"effort":{"level":"high"},"workspace":{"project_dir":"'"$PWD"'"},"context_window":{"used_percentage":74,"context_window_size":1000000},"rate_limits":{"five_hour":{"used_percentage":42,"resets_at":'$((NOW + 7200))'},"seven_day":{"used_percentage":18,"resets_at":'$((NOW + 300000))'}}}')
+assert_line_count "compact is one line" 1
+assert_line "compact full layout" 1 "^Opus 4\.6 high · 74% \| ${REPO_NAME} \(.+\) \| 5h 42% ⇣[0-9]+% · 7d 18% ⇣[0-9]+%$"
+assert_line_not "compact has no bar" 1 '[█░]'
+assert_line_not "compact has no context label" 1 '1M'
+OUTPUT=$(run_compact '{"model":{"display_name":"Sonnet 4.6"},"effort":{"level":"low"},"workspace":{"project_dir":"/x/proj"},"context_window":{"used_percentage":5,"context_window_size":200000},"cost":{"total_cost_usd":1.2}}')
+assert_line "compact without quota shows placeholders and cost" 1 '^Sonnet 4\.6 low · 5% \| proj \| 5h -- · 7d -- · \$1\.20$'
+OUTPUT=$(jq -n --arg d 'C:\Users\alice\projects\my-app\.claude\worktrees\fix-auth' '{model:{display_name:"Opus"},workspace:{project_dir:$d}}' | bash claude-pace.sh --compact 2>/dev/null | strip_ansi)
+assert_line "compact worktree shows repo/worktree" 1 '· [0-9]+% \| my-app/fix-auth \| 5h'
+OUTPUT=$(echo '{"model":{"display_name":"Claude Super Long Model Name 9.9"},"effort":{"level":"medium"},"workspace":{"project_dir":"/x/proj"}}' | PROJ=leaked bash claude-pace.sh --compact 2>/dev/null | strip_ansi)
+assert_line "compact ignores PROJ from environment" 1 '\| proj \| 5h'
+assert_line "compact caps model+effort at 28 chars" 1 '^Claude Super Long Mo… medium ·'
+
 # ── Summary ──
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
