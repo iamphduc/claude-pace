@@ -229,10 +229,10 @@ Add `--compact` to the status line command to print one line instead of two:
 ```
 
 ```
-Opus 5.5 high · 34% | claude-pace (main) | 5h 42% ⇣18% · 7d 18% ⇣32%
+Opus 5.5 high · 34% | 5h 42% ⇣18% · 7d 18% ⇣32% | claude-pace (main)
 ```
 
-Compact mode keeps the model, effort, context percentage, project, branch, and quota with pace delta. A `|` separates the three sections: model, project, and quota. A `·` separates the items inside a section. It drops the progress bar, the context size label, git diff stats, and reset countdowns. Without quota data, it shows `--` placeholders and the session cost.
+Compact mode keeps the model, effort, context percentage, project, branch, and quota with pace delta. A `|` separates the three sections: model, quota, and project. The project section comes last because the branch name has no fixed width. If the line is too long for the terminal, only the branch name is cut. A `·` separates the items inside a section. It drops the progress bar, the context size label, git diff stats, and reset countdowns. Without quota data, it shows `--` placeholders and the session cost.
 
 - `npx claude-pace` and `/claude-pace:setup` rewrite the command without the flag. Add `--compact` again after you run either one.
 - The PowerShell port does not support `--compact` yet.
