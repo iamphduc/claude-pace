@@ -179,7 +179,9 @@ _ML="${MODEL} ${EF}"
 F=$((PCT / 10))
 ((F < 0)) && F=0
 ((F > 10)) && F=10
-if ((PCT >= 90)); then BC=$R; elif ((PCT >= 70)); then BC=$Y; else BC=$G; fi
+# Context color: green < 40%, yellow 40-69%, red >= 70%. Quality drops as context
+# grows, and red at 70% leaves time to /compact before auto-compaction fires.
+if ((PCT >= 70)); then BC=$R; elif ((PCT >= 40)); then BC=$Y; else BC=$G; fi
 BAR=""
 for ((i = 0; i < F; i++)); do BAR+='█'; done
 for ((i = F; i < 10; i++)); do BAR+='░'; done

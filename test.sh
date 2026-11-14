@@ -626,6 +626,26 @@ OUTPUT=$(echo '{"model":{"display_name":"Claude Super Long Model Name 9.9"},"eff
 assert_line "compact ignores PROJ from environment" 1 '\| proj$'
 assert_line "compact caps model+effort at 28 chars" 1 '^Claude Super Long Mo… medium ·'
 
+# ── Test 33: context color thresholds (green < 40, yellow 40-69, red >= 70) ──
+echo "Test 33: context color thresholds"
+ctx_color() { # $1=used_percentage, $2=mode flag
+  echo '{"model":{"display_name":"Opus"},"workspace":{"project_dir":"/x/proj"},"context_window":{"used_percentage":'"$1"',"context_window_size":200000}}' |
+    bash claude-pace.sh $2 2>/dev/null
+}
+# Two-line mode colors the bar; compact mode colors the percentage.
+for mode in "" --compact; do
+  for c in "39:32" "40:33" "69:33" "70:31"; do
+    p=${c%%:*} code=${c##*:}
+    want=$'\033['"$code"'m'
+    if [ -z "$mode" ]; then want+="█"; else want+="$p%"; fi
+    if ctx_color "$p" "$mode" | grep -qF "$want"; then
+      echo "  PASS: ${mode:-full} ${p}% uses color ${code}"; PASS=$((PASS + 1))
+    else
+      echo "  FAIL: ${mode:-full} ${p}% uses color ${code}"; FAIL=$((FAIL + 1))
+    fi
+  done
+done
+
 # ── Summary ──
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
